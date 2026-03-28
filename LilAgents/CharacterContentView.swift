@@ -1,8 +1,8 @@
 import AppKit
 
-class KeyableWindow: NSWindow {
+class KeyableWindow: NSPanel {
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
 
 class CharacterContentView: NSView {

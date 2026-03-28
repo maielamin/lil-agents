@@ -301,6 +301,21 @@ class WalkerCharacter {
         }
     }
 
+    func clearChat() {
+        session?.terminate()
+        session = nil
+        terminalView?.textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
+        currentStreamingText = ""
+    }
+
+    @objc private func refreshChat() {
+        clearChat()
+        let newSession = AgentProvider.current.createSession()
+        session = newSession
+        wireSession(newSession)
+        newSession.start()
+    }
+
     func closePopover() {
         guard isIdleForPopover else { return }
 
@@ -349,7 +364,7 @@ class WalkerCharacter {
 
         let win = KeyableWindow(
             contentRect: CGRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight),
-            styleMask: .borderless,
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -380,6 +395,16 @@ class WalkerCharacter {
         titleLabel.textColor = t.titleText
         titleLabel.frame = NSRect(x: 12, y: 6, width: 200, height: 16)
         titleBar.addSubview(titleLabel)
+
+        let refreshBtn = NSButton(frame: NSRect(x: popoverWidth - 28, y: 4, width: 20, height: 20))
+        refreshBtn.bezelStyle = .inline
+        refreshBtn.isBordered = false
+        let refreshImg = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "New chat")
+        refreshBtn.image = refreshImg
+        refreshBtn.contentTintColor = t.titleText.withAlphaComponent(0.6)
+        refreshBtn.target = self
+        refreshBtn.action = #selector(refreshChat)
+        titleBar.addSubview(refreshBtn)
 
         let sep = NSView(frame: NSRect(x: 0, y: popoverHeight - 29, width: popoverWidth, height: 1))
         sep.wantsLayer = true
