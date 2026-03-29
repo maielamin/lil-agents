@@ -17,7 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         controller = LilAgentsController()
         controller?.start()
         setupMenuBar()
@@ -57,9 +57,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for (i, provider) in AgentProvider.allCases.enumerated() {
             let item = NSMenuItem(title: provider.displayName, action: #selector(switchProvider(_:)), keyEquivalent: "")
             item.tag = i
+            item.target = self
             item.state = provider == AgentProvider.current ? .on : .off
             providerMenu.addItem(item)
         }
+        providerMenu.addItem(NSMenuItem.separator())
+        let powerMode = NSMenuItem(title: "Claude Power Mode", action: #selector(toggleClaudePowerMode(_:)), keyEquivalent: "")
+        powerMode.target = self
+        powerMode.tag = -1000
+        powerMode.state = AgentProvider.claudePowerModeEnabled ? .on : .off
+        powerMode.toolTip = "Lets Claude run tools without permission prompts. Safer to keep off unless you need full automation."
+        providerMenu.addItem(powerMode)
+        let saverMode = NSMenuItem(title: "Claude Saver Mode", action: #selector(toggleClaudeSaverMode(_:)), keyEquivalent: "")
+        saverMode.target = self
+        saverMode.tag = -1001
+        saverMode.state = AgentProvider.claudeSaverModeEnabled ? .on : .off
+        providerMenu.addItem(saverMode)
+        providerMenu.addItem(NSMenuItem.separator())
+        let resetCurrent = NSMenuItem(title: "Reset Smart Reminder (Current)", action: #selector(resetSmartReminderCurrent), keyEquivalent: "")
+        resetCurrent.target = self
+        resetCurrent.tag = -1002
+        providerMenu.addItem(resetCurrent)
+        let resetAll = NSMenuItem(title: "Reset Smart Reminder (All)", action: #selector(resetSmartReminderAll), keyEquivalent: "")
+        resetAll.target = self
+        resetAll.tag = -1003
+        providerMenu.addItem(resetAll)
         providerItem.submenu = providerMenu
         menu.addItem(providerItem)
 
@@ -150,7 +172,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let providerMenu = sender.menu {
             for item in providerMenu.items {
-                item.state = item.tag == idx ? .on : .off
+                if item.action == #selector(switchProvider(_:)) {
+                    item.state = item.tag == idx ? .on : .off
+                }
             }
         }
 
@@ -167,6 +191,62 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             char.terminalView = nil
             char.thinkingBubbleWindow?.orderOut(nil)
             char.thinkingBubbleWindow = nil
+        }
+    }
+
+    @objc func resetSmartReminderCurrent() {
+        AgentProvider.current.clearSmartReminderPreference()
+        resetCharacterSessionsForPreferenceRefresh()
+    }
+
+    @objc func toggleClaudePowerMode(_ sender: NSMenuItem) {
+        AgentProvider.claudePowerModeEnabled.toggle()
+        sender.state = AgentProvider.claudePowerModeEnabled ? .on : .off
+        resetCharacterSessionsForPreferenceRefresh()
+    }
+
+    @objc func toggleClaudeSaverMode(_ sender: NSMenuItem) {
+        AgentProvider.claudeSaverModeEnabled.toggle()
+        sender.state = AgentProvider.claudeSaverModeEnabled ? .on : .off
+        refreshVisiblePopovers()
+    }
+
+    @objc func resetSmartReminderAll() {
+        AgentProvider.clearAllSmartReminderPreferences()
+        resetCharacterSessionsForPreferenceRefresh()
+    }
+
+    private func resetCharacterSessionsForPreferenceRefresh() {
+        controller?.characters.forEach { char in
+            char.session?.terminate()
+            char.session = nil
+            if char.isIdleForPopover {
+                char.closePopover()
+            }
+            char.popoverWindow?.orderOut(nil)
+            char.popoverWindow = nil
+            char.terminalView = nil
+            char.thinkingBubbleWindow?.orderOut(nil)
+            char.thinkingBubbleWindow = nil
+        }
+    }
+
+    private func refreshVisiblePopovers() {
+        controller?.characters.forEach { char in
+            guard char.isIdleForPopover else { return }
+            char.popoverWindow?.orderOut(nil)
+            char.popoverWindow = nil
+            char.terminalView = nil
+            char.createPopoverWindow()
+            if let session = char.session, !session.history.isEmpty {
+                char.terminalView?.replayHistory(session.history)
+            }
+            char.updatePopoverPosition()
+            char.popoverWindow?.orderFrontRegardless()
+            char.popoverWindow?.makeKey()
+            if let terminal = char.terminalView {
+                char.popoverWindow?.makeFirstResponder(terminal.inputField)
+            }
         }
     }
 

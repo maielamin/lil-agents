@@ -3,6 +3,8 @@ import AppKit
 
 class WalkerCharacter {
     let videoName: String
+    var characterName: String = "Agent"
+    var tagline: String = ""
     var window: NSWindow!
     var playerLayer: AVPlayerLayer!
     var queuePlayer: AVQueuePlayer!
@@ -50,6 +52,12 @@ class WalkerCharacter {
     var clickOutsideMonitor: Any?
     var escapeKeyMonitor: Any?
     var currentStreamingText = ""
+    private var userTurnCount = 0
+    private var didPromptForReminderPreference = false
+    private var isAwaitingReminderPreference = false
+    private var isSmartReminderEnabled = false
+    private var didShowProactiveLimitPrompt = false
+    private var isAwaitingHandoffConfirmation = false
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
@@ -257,11 +265,16 @@ class WalkerCharacter {
         showingCompletion = false
         hideBubble()
 
+        let didCreateSession: Bool
         if session == nil {
+            resetLimitPromptState()
             let newSession = AgentProvider.current.createSession()
             session = newSession
             wireSession(newSession)
             newSession.start()
+            didCreateSession = true
+        } else {
+            didCreateSession = false
         }
 
         if popoverWindow == nil {
@@ -270,6 +283,10 @@ class WalkerCharacter {
 
         if let terminal = terminalView, let session = session, !session.history.isEmpty {
             terminal.replayHistory(session.history)
+        }
+
+        if didCreateSession {
+            promptForReminderPreferenceIfNeeded()
         }
 
         updatePopoverPosition()
@@ -304,6 +321,7 @@ class WalkerCharacter {
     func clearChat() {
         session?.terminate()
         session = nil
+        resetLimitPromptState()
         terminalView?.textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
         currentStreamingText = ""
     }
@@ -314,6 +332,15 @@ class WalkerCharacter {
         session = newSession
         wireSession(newSession)
         newSession.start()
+    }
+
+    private func resetLimitPromptState() {
+        userTurnCount = 0
+        didPromptForReminderPreference = false
+        isAwaitingReminderPreference = false
+        isSmartReminderEnabled = false
+        didShowProactiveLimitPrompt = false
+        isAwaitingHandoffConfirmation = false
     }
 
     func closePopover() {
@@ -371,7 +398,7 @@ class WalkerCharacter {
         win.isOpaque = false
         win.backgroundColor = .clear
         win.hasShadow = true
-        win.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 10)
+        win.level = .floating
         win.collectionBehavior = [.moveToActiveSpace, .stationary]
         let brightness = t.popoverBg.redComponent * 0.299 + t.popoverBg.greenComponent * 0.587 + t.popoverBg.blueComponent * 0.114
         win.appearance = NSAppearance(named: brightness < 0.5 ? .darkAqua : .aqua)
@@ -385,18 +412,35 @@ class WalkerCharacter {
         container.layer?.borderColor = t.popoverBorder.cgColor
         container.autoresizingMask = [.width, .height]
 
-        let titleBar = NSView(frame: NSRect(x: 0, y: popoverHeight - 28, width: popoverWidth, height: 28))
+        let titleBarHeight: CGFloat = 40
+        let titleBar = NSView(frame: NSRect(x: 0, y: popoverHeight - titleBarHeight, width: popoverWidth, height: titleBarHeight))
         titleBar.wantsLayer = true
         titleBar.layer?.backgroundColor = t.titleBarBg.cgColor
         container.addSubview(titleBar)
 
-        let titleLabel = NSTextField(labelWithString: t.titleString)
+        let combinedBase: String
+        switch characterName.lowercased() {
+        case "bruce": combinedBase = "Let's get to business"
+        case "jazz": combinedBase = "Let's chit chat"
+        default:
+            let providerName = AgentProvider.current.displayName
+            let separator = " — "
+            let poweredBy = "Powered by \(providerName)"
+            switch t.titleFormat {
+            case .uppercase:      combinedBase = "\(characterName.uppercased())\(separator.uppercased())\(poweredBy.uppercased())"
+            case .lowercaseTilde: combinedBase = "\(characterName) ~ powered by \(providerName.lowercased())"
+            case .capitalized:    combinedBase = "\(characterName)\(separator)\(poweredBy)"
+            }
+        }
+        let saverSuffix = (AgentProvider.current == .claude && AgentProvider.claudeSaverModeEnabled) ? " · Saver On" : ""
+        let combined = combinedBase + saverSuffix
+        let titleLabel = NSTextField(labelWithString: combined)
         titleLabel.font = t.titleFont
         titleLabel.textColor = t.titleText
-        titleLabel.frame = NSRect(x: 12, y: 6, width: 200, height: 16)
+        titleLabel.frame = NSRect(x: 12, y: (titleBarHeight - 16) / 2, width: popoverWidth - 80, height: 16)
         titleBar.addSubview(titleLabel)
 
-        let refreshBtn = NSButton(frame: NSRect(x: popoverWidth - 28, y: 4, width: 20, height: 20))
+        let refreshBtn = NSButton(frame: NSRect(x: popoverWidth - 28, y: (titleBarHeight - 20) / 2, width: 20, height: 20))
         refreshBtn.bezelStyle = .inline
         refreshBtn.isBordered = false
         let refreshImg = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: "New chat")
@@ -406,17 +450,20 @@ class WalkerCharacter {
         refreshBtn.action = #selector(refreshChat)
         titleBar.addSubview(refreshBtn)
 
-        let sep = NSView(frame: NSRect(x: 0, y: popoverHeight - 29, width: popoverWidth, height: 1))
+        let sep = NSView(frame: NSRect(x: 0, y: popoverHeight - titleBarHeight - 1, width: popoverWidth, height: 1))
         sep.wantsLayer = true
         sep.layer?.backgroundColor = t.separatorColor.cgColor
         container.addSubview(sep)
 
-        let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight - 29))
+        let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight - titleBarHeight - 1))
         terminal.characterColor = characterColor
         terminal.themeOverride = themeOverride
         terminal.autoresizingMask = [.width, .height]
+        terminal.onInterceptMessage = { [weak self] message in
+            self?.handlePotentialHandoffResponse(message) ?? false
+        }
         terminal.onSendMessage = { [weak self] message in
-            self?.session?.send(message: message)
+            self?.handleOutgoingUserMessage(message)
         }
         container.addSubview(terminal)
 
@@ -439,6 +486,9 @@ class WalkerCharacter {
 
         session.onError = { [weak self] text in
             self?.terminalView?.appendError(text)
+            if AgentProvider.isLikelyLimitMessage(text) {
+                self?.showLimitPrompt(reason: "limit signal detected")
+            }
         }
 
         session.onToolUse = { [weak self] toolName, input in
@@ -455,6 +505,167 @@ class WalkerCharacter {
             self?.terminalView?.endStreaming()
             self?.terminalView?.appendError("\(providerName) session ended.")
         }
+    }
+
+    private func handleOutgoingUserMessage(_ message: String) {
+        userTurnCount += 1
+        maybeShowProactiveLimitPrompt()
+        session?.send(message: message)
+    }
+
+    private func maybeShowProactiveLimitPrompt() {
+        guard isSmartReminderEnabled else { return }
+        guard !didShowProactiveLimitPrompt, !isAwaitingHandoffConfirmation else { return }
+        let threshold = AgentProvider.current.proactiveWarningTurnThreshold
+        guard userTurnCount >= threshold else { return }
+        didShowProactiveLimitPrompt = true
+        showLimitPrompt(reason: "you are nearing your plan limit")
+    }
+
+    private func promptForReminderPreferenceIfNeeded() {
+        let provider = AgentProvider.current
+        if let saved = provider.loadSmartReminderPreference() {
+            applySmartReminderPreferenceAcrossAgents(saved)
+            didPromptForReminderPreference = true
+            return
+        }
+
+        guard !didPromptForReminderPreference else { return }
+        didPromptForReminderPreference = true
+        isAwaitingReminderPreference = true
+        terminalView?.showToast("Enable Smart reminders for \(provider.displayName)? Reply Y/N")
+    }
+
+    private func showLimitPrompt(reason: String) {
+        guard !isAwaitingHandoffConfirmation else { return }
+        isAwaitingHandoffConfirmation = true
+        let provider = AgentProvider.current.displayName
+        terminalView?.showToast("Near \(provider) limit (\(reason)). Generate handoff summary? Y/N")
+    }
+
+    private func applySmartReminderPreferenceAcrossAgents(_ enabled: Bool) {
+        controller?.characters.forEach { character in
+            character.isSmartReminderEnabled = enabled
+            character.didPromptForReminderPreference = true
+            character.isAwaitingReminderPreference = false
+        }
+    }
+
+    private func handlePotentialHandoffResponse(_ message: String) -> Bool {
+        if isAwaitingReminderPreference {
+            let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if lower == "y" || lower == "yes" {
+                isAwaitingReminderPreference = false
+                applySmartReminderPreferenceAcrossAgents(true)
+                AgentProvider.current.saveSmartReminderPreference(true)
+                terminalView?.showToast("Smart reminders enabled")
+                return true
+            }
+            if lower == "n" || lower == "no" {
+                isAwaitingReminderPreference = false
+                applySmartReminderPreferenceAcrossAgents(false)
+                AgentProvider.current.saveSmartReminderPreference(false)
+                terminalView?.showToast("Smart reminders disabled")
+                return true
+            }
+            terminalView?.showToast("Reply with Y or N")
+            return true
+        }
+
+        guard isAwaitingHandoffConfirmation else { return false }
+        let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "y" || lower == "yes" {
+            isAwaitingHandoffConfirmation = false
+            let summary = generateHandoffSummary()
+            terminalView?.appendStreamingText("\n\(summary)\n")
+            terminalView?.endStreaming()
+            copyToClipboard(summary)
+            terminalView?.appendToolResult(summary: "Handoff summary copied to clipboard.", isError: false)
+            return true
+        }
+        if lower == "n" || lower == "no" {
+            isAwaitingHandoffConfirmation = false
+            terminalView?.appendToolResult(summary: "Handoff summary skipped. Continuing current chat.", isError: false)
+            return true
+        }
+        terminalView?.showToast("Reply with Y or N")
+        return true
+    }
+
+    private func copyToClipboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    private func generateHandoffSummary() -> String {
+        let messages = session?.history ?? []
+        let firstUser = messages.first(where: { $0.role == .user })?.text ?? "Continue the current coding task."
+        let assistantHighlights = messages
+            .filter { $0.role == .assistant }
+            .map(\.text)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .suffix(3)
+
+        var files = Set<String>()
+        let filePattern = #"[A-Za-z0-9_./-]+\.(swift|md|json|js|ts|py|xcodeproj)"#
+        let regex = try? NSRegularExpression(pattern: filePattern)
+        for msg in messages {
+            let range = NSRange(msg.text.startIndex..<msg.text.endIndex, in: msg.text)
+            let matches = regex?.matches(in: msg.text, range: range) ?? []
+            for m in matches {
+                if let r = Range(m.range, in: msg.text) {
+                    files.insert(String(msg.text[r]))
+                }
+            }
+        }
+
+        let riskItems = messages
+            .filter { $0.role == .error || $0.text.lowercased().contains("error") }
+            .map(\.text)
+            .suffix(2)
+
+        let objective = "Objective\n- \(firstUser)"
+
+        let decisions: String
+        if assistantHighlights.isEmpty {
+            decisions = "Decisions made and why\n- No explicit decisions captured yet; continue from latest user direction."
+        } else {
+            let bullets = assistantHighlights.map { "- \($0.replacingOccurrences(of: "\n", with: " "))" }.joined(separator: "\n")
+            decisions = "Decisions made and why\n\(bullets)"
+        }
+
+        let fileSection: String
+        if files.isEmpty {
+            fileSection = "Files touched and key changes\n- No concrete file paths captured in this session history yet."
+        } else {
+            let bullets = files.sorted().map { "- \($0): updated during session" }.joined(separator: "\n")
+            fileSection = "Files touched and key changes\n\(bullets)"
+        }
+
+        let remaining = "Remaining tasks in priority order\n- Confirm current behavior still works end-to-end.\n- Implement the next smallest change requested by the user.\n- Run quick validation and capture any follow-up fixes."
+
+        let risks: String
+        if riskItems.isEmpty {
+            risks = "Risks and test checklist\n- Risk: hidden edge cases in untested flows.\n- Test: run the main user flow and verify no regressions.\n- Test: confirm provider switching and session reset behavior."
+        } else {
+            let bullets = riskItems.map { "- Risk signal: \($0.replacingOccurrences(of: "\n", with: " "))" }.joined(separator: "\n")
+            risks = "Risks and test checklist\n\(bullets)\n- Test: verify failures above are resolved.\n- Test: re-run core chat flow after fix."
+        }
+
+        return [
+            "Please summarize this session for handoff to another coding assistant:",
+            "",
+            objective,
+            "",
+            decisions,
+            "",
+            fileSection,
+            "",
+            remaining,
+            "",
+            risks
+        ].joined(separator: "\n")
     }
 
     private func formatToolInput(_ input: [String: Any]) -> String {
@@ -474,8 +685,9 @@ class WalkerCharacter {
         let y = charFrame.maxY - 15
 
         let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
         x = max(screenFrame.minX + 4, min(x, screenFrame.maxX - popoverSize.width - 4))
-        let clampedY = min(y, screenFrame.maxY - popoverSize.height - 4)
+        let clampedY = min(y, visibleFrame.maxY - popoverSize.height - 4)
 
         popover.setFrameOrigin(NSPoint(x: x, y: clampedY))
     }
@@ -640,7 +852,7 @@ class WalkerCharacter {
         win.isOpaque = false
         win.backgroundColor = .clear
         win.hasShadow = true
-        win.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 5)
+        win.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
         win.ignoresMouseEvents = true
         win.collectionBehavior = [.moveToActiveSpace, .stationary]
 

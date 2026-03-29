@@ -11,6 +11,23 @@ class ClaudeSession: AgentSession {
     private(set) var isRunning = false
     private(set) var isBusy = false
     private static var binaryPath: String?
+    private var launchedWithMCP = false
+    private var sessionGeneration = 0
+
+    private static let gmailHint = """
+        [System note: you are running on macOS and have bash tool access. \
+        To compose a Gmail email, use the Bash tool to run: \
+        open "https://mail.google.com/mail/?view=cm&to=EMAIL&su=SUBJECT&body=BODY" \
+        URL-encode spaces as %20 and newlines as %0A. This opens a pre-filled Gmail compose window in the browser.]
+        """
+    private static let saverPolicy = """
+        [Response policy: keep responses concise to save credits. Use short bullets, avoid repetition and long preambles, and include only necessary details. Expand only if the user explicitly asks for more detail.]
+        """
+
+    private static let emailKeywords = ["email", "gmail", "send mail", "send an email", "write an email"]
+    private static let mcpConfigPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".lil-agents-mcp.json").path
+    private var mcpConfigExists: Bool { FileManager.default.fileExists(atPath: Self.mcpConfigPath) }
 
     var onText: ((String) -> Void)?
     var onError: ((String) -> Void)?
@@ -40,7 +57,7 @@ class ClaudeSession: AgentSession {
             guard let self = self, let binaryPath = path else {
                 let msg = "Claude CLI not found.\n\n\(AgentProvider.claude.installInstructions)"
                 self?.onError?(msg)
-                self?.history.append(AgentMessage(role: .error, text: msg))
+                self?.history.appendBounded(AgentMessage(role: .error, text: msg))
                 return
             }
             Self.binaryPath = binaryPath
@@ -51,13 +68,19 @@ class ClaudeSession: AgentSession {
     private func launchProcess(binaryPath: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binaryPath)
-        proc.arguments = [
+        var args = [
             "-p",
             "--output-format", "stream-json",
             "--input-format", "stream-json",
-            "--verbose",
-            "--dangerously-skip-permissions"
+            "--verbose"
         ]
+        if AgentProvider.claudePowerModeEnabled {
+            args.append("--dangerously-skip-permissions")
+        }
+        if launchedWithMCP {
+            args += ["--mcp-config", Self.mcpConfigPath]
+        }
+        proc.arguments = args
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         proc.environment = ShellEnvironment.processEnvironment()
 
@@ -68,11 +91,13 @@ class ClaudeSession: AgentSession {
         proc.standardOutput = outPipe
         proc.standardError = errPipe
 
+        let generation = sessionGeneration
         proc.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
-                self?.isRunning = false
-                self?.isBusy = false
-                self?.onProcessExit?()
+                guard let self = self, self.sessionGeneration == generation else { return }
+                self.isRunning = false
+                self.isBusy = false
+                self.onProcessExit?()
             }
         }
 
@@ -106,12 +131,12 @@ class ClaudeSession: AgentSession {
             let pending = pendingMessages
             pendingMessages = []
             for msg in pending {
-                writeMessage(msg, to: inPipe)
+                send(message: msg)
             }
         } catch {
             let msg = "Failed to launch Claude CLI.\n\n\(AgentProvider.claude.installInstructions)\n\nError: \(error.localizedDescription)"
             onError?(msg)
-            history.append(AgentMessage(role: .error, text: msg))
+            history.appendBounded(AgentMessage(role: .error, text: msg))
         }
     }
 
@@ -120,13 +145,23 @@ class ClaudeSession: AgentSession {
             pendingMessages.append(message)
             return
         }
-        writeMessage(message, to: pipe)
+
+        var outgoing = message
+        let lower = outgoing.lowercased()
+        let isEmailRequest = Self.emailKeywords.contains(where: { lower.contains($0) })
+        if isEmailRequest {
+            outgoing = "\(Self.gmailHint)\n\n\(outgoing)"
+        }
+        if AgentProvider.claudeSaverModeEnabled {
+            outgoing = "\(Self.saverPolicy)\n\nUser request:\n\(outgoing)"
+        }
+        writeMessage(outgoing, displayMessage: message, to: pipe)
     }
 
-    private func writeMessage(_ message: String, to pipe: Pipe) {
+    private func writeMessage(_ message: String, displayMessage: String? = nil, to pipe: Pipe) {
         isBusy = true
         currentResponseText = ""
-        history.append(AgentMessage(role: .user, text: message))
+        history.appendBounded(AgentMessage(role: .user, text: displayMessage ?? message))
 
         let payload: [String: Any] = [
             "type": "user",
@@ -185,7 +220,7 @@ class ClaudeSession: AgentSession {
                         let toolName = block["name"] as? String ?? "Tool"
                         let input = block["input"] as? [String: Any] ?? [:]
                         let summary = formatToolSummary(toolName: toolName, input: input)
-                        history.append(AgentMessage(role: .toolUse, text: "\(toolName): \(summary)"))
+                        history.appendBounded(AgentMessage(role: .toolUse, text: "\(toolName): \(summary)"))
                         onToolUse?(toolName, input)
                     }
                 }
@@ -214,7 +249,7 @@ class ClaudeSession: AgentSession {
                                 summary = String(contentStr.prefix(80))
                             }
                         }
-                        history.append(AgentMessage(role: .toolResult, text: isError ? "ERROR: \(summary)" : summary))
+                        history.appendBounded(AgentMessage(role: .toolResult, text: isError ? "ERROR: \(summary)" : summary))
                         onToolResult?(summary, isError)
                     }
                 }
@@ -231,7 +266,7 @@ class ClaudeSession: AgentSession {
                 finalText = ""
             }
             if !finalText.isEmpty {
-                history.append(AgentMessage(role: .assistant, text: finalText))
+                history.appendBounded(AgentMessage(role: .assistant, text: finalText))
             }
             currentResponseText = ""
             onTurnComplete?()

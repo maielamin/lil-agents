@@ -51,10 +51,15 @@ class TerminalView: NSView {
     let scrollView = NSScrollView()
     let textView = NSTextView()
     let inputField = NSTextField()
+    private let toastContainer = NSVisualEffectView()
+    private let toastLabel = NSTextField(labelWithString: "")
+    private var toastHideWorkItem: DispatchWorkItem?
     var onSendMessage: ((String) -> Void)?
+    var onInterceptMessage: ((String) -> Bool)?
 
     private var currentAssistantText = ""
     private var isStreaming = false
+    private let maxTranscriptCharacters = 120_000
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -142,6 +147,41 @@ class TerminalView: NSView {
         inputField.target = self
         inputField.action = #selector(inputSubmitted)
         addSubview(inputField)
+
+        toastContainer.material = .hudWindow
+        toastContainer.blendingMode = .withinWindow
+        toastContainer.state = .active
+        toastContainer.wantsLayer = true
+        toastContainer.layer?.cornerRadius = 8
+        toastContainer.layer?.masksToBounds = true
+        toastContainer.alphaValue = 0
+        toastContainer.isHidden = true
+        toastContainer.autoresizingMask = [.width, .minYMargin]
+
+        toastLabel.font = t.font
+        toastLabel.textColor = t.textPrimary
+        toastLabel.alignment = .left
+        toastLabel.lineBreakMode = .byTruncatingTail
+        toastLabel.frame = NSRect(x: 10, y: 5, width: 340, height: 16)
+        toastLabel.autoresizingMask = [.width]
+        toastContainer.addSubview(toastLabel)
+
+        addSubview(toastContainer)
+        layoutToast()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutToast()
+    }
+
+    private func layoutToast() {
+        let width = min(max(frame.width - 24, 180), 360)
+        let height: CGFloat = 26
+        let x = (frame.width - width) / 2
+        let y = frame.height - height - 8
+        toastContainer.frame = NSRect(x: x, y: y, width: width, height: height)
+        toastLabel.frame = NSRect(x: 10, y: 5, width: width - 20, height: 16)
     }
 
     // MARK: - Input
@@ -152,6 +192,9 @@ class TerminalView: NSView {
         inputField.stringValue = ""
 
         appendUser(text)
+        if onInterceptMessage?(text) == true {
+            return
+        }
         isStreaming = true
         currentAssistantText = ""
         onSendMessage?(text)
@@ -214,6 +257,30 @@ class TerminalView: NSView {
         scrollToBottom()
     }
 
+    func showToast(_ text: String) {
+        toastHideWorkItem?.cancel()
+        toastLabel.stringValue = text
+        layoutToast()
+        toastContainer.isHidden = false
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            toastContainer.animator().alphaValue = 1
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.2
+                self.toastContainer.animator().alphaValue = 0
+            }, completionHandler: {
+                self.toastContainer.isHidden = true
+            })
+        }
+        toastHideWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work)
+    }
+
     func appendToolUse(toolName: String, summary: String) {
         let t = theme
         endStreaming()
@@ -269,7 +336,15 @@ class TerminalView: NSView {
     }
 
     private func scrollToBottom() {
+        trimTranscriptIfNeeded()
         textView.scrollToEndOfDocument(nil)
+    }
+
+    private func trimTranscriptIfNeeded() {
+        guard let storage = textView.textStorage else { return }
+        let overflow = storage.length - maxTranscriptCharacters
+        guard overflow > 0 else { return }
+        storage.deleteCharacters(in: NSRange(location: 0, length: overflow))
     }
 
     // MARK: - Markdown Rendering

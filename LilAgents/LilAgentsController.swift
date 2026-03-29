@@ -10,6 +10,7 @@ class LilAgentsController {
 
     func start() {
         let char1 = WalkerCharacter(videoName: "walk-bruce-01")
+        char1.characterName = "Bruce"
         char1.accelStart = 3.0
         char1.fullSpeedStart = 3.75
         char1.decelStart = 8.0
@@ -17,6 +18,7 @@ class LilAgentsController {
         char1.walkAmountRange = 0.4...0.65
 
         let char2 = WalkerCharacter(videoName: "walk-jazz-01")
+        char2.characterName = "Jazz"
         char2.accelStart = 3.9
         char2.fullSpeedStart = 4.5
         char2.decelStart = 8.0

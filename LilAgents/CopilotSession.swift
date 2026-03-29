@@ -45,7 +45,7 @@ class CopilotSession: AgentSession {
             } else {
                 let msg = "Copilot CLI not found.\n\n\(AgentProvider.copilot.installInstructions)"
                 self.onError?(msg)
-                self.history.append(AgentMessage(role: .error, text: msg))
+                self.history.appendBounded(AgentMessage(role: .error, text: msg))
             }
         }
     }
@@ -53,7 +53,7 @@ class CopilotSession: AgentSession {
     func send(message: String) {
         guard isRunning, let binaryPath = Self.binaryPath else { return }
         isBusy = true
-        history.append(AgentMessage(role: .user, text: message))
+        history.appendBounded(AgentMessage(role: .user, text: message))
         lineBuffer = ""
 
         let proc = Process()
@@ -96,7 +96,7 @@ class CopilotSession: AgentSession {
                 } else {
                     let text = collectedPlainText.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        self.history.append(AgentMessage(role: .assistant, text: text))
+                        self.history.appendBounded(AgentMessage(role: .assistant, text: text))
                         self.onText?(text)
                     }
                 }
@@ -142,7 +142,7 @@ class CopilotSession: AgentSession {
             isBusy = false
             let msg = "Failed to launch Copilot CLI: \(error.localizedDescription)"
             onError?(msg)
-            history.append(AgentMessage(role: .error, text: msg))
+            history.appendBounded(AgentMessage(role: .error, text: msg))
         }
     }
 
@@ -175,7 +175,7 @@ class CopilotSession: AgentSession {
                 useJsonOutput = false
                 let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty {
-                    history.append(AgentMessage(role: .assistant, text: text))
+                    history.appendBounded(AgentMessage(role: .assistant, text: text))
                     onText?(text)
                 }
             }
@@ -200,7 +200,7 @@ class CopilotSession: AgentSession {
         case "assistant.message":
             let content = data["content"] as? String ?? ""
             if !content.isEmpty {
-                history.append(AgentMessage(role: .assistant, text: content))
+                history.appendBounded(AgentMessage(role: .assistant, text: content))
             }
 
         case "assistant.turn_end":
@@ -217,20 +217,20 @@ class CopilotSession: AgentSession {
             let command = input["command"] as? String ?? ""
             let displayName = command.isEmpty ? toolName : "Bash"
             let summary = command.isEmpty ? toolName : command
-            history.append(AgentMessage(role: .toolUse, text: "\(displayName): \(summary)"))
+            history.appendBounded(AgentMessage(role: .toolUse, text: "\(displayName): \(summary)"))
             onToolUse?(displayName, input)
 
         case "assistant.tool_result":
             let output = data["output"] as? String ?? data["result"] as? String ?? ""
             let isError = (data["is_error"] as? Bool) ?? (data["status"] as? String == "error")
             let summary = String(output.prefix(80))
-            history.append(AgentMessage(role: .toolResult, text: isError ? "ERROR: \(summary)" : summary))
+            history.appendBounded(AgentMessage(role: .toolResult, text: isError ? "ERROR: \(summary)" : summary))
             onToolResult?(summary, isError)
 
         case "error":
             let msg = data["message"] as? String ?? data["error"] as? String ?? "Unknown error"
             onError?(msg)
-            history.append(AgentMessage(role: .error, text: msg))
+            history.appendBounded(AgentMessage(role: .error, text: msg))
 
         default:
             break
