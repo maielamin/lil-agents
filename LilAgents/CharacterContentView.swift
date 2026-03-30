@@ -8,6 +8,21 @@ class KeyableWindow: NSPanel {
 class CharacterContentView: NSView {
     weak var character: WalkerCharacter?
 
+    private let longPressDuration: TimeInterval = 0.18
+    private let dragActivationDistance: CGFloat = 4.0
+    private let manualLiftHeight: CGFloat = 18.0
+    private let liftAnimationDuration: TimeInterval = 0.08
+    private let dropAnimationDuration: TimeInterval = 0.05
+    private var mouseDownScreenPoint: NSPoint = .zero
+    private var mouseDownWindowOrigin: NSPoint = .zero
+    private var longPressReached = false
+    private var isDraggingCharacter = false
+    private var isMouseDown = false
+    private var isLifted = false
+    private var longPressWorkItem: DispatchWorkItem?
+    private var globalMouseUpMonitor: Any?
+    private var localMouseUpMonitor: Any?
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let localPoint = convert(point, from: superview)
         guard bounds.contains(localPoint) else { return nil }
@@ -55,6 +70,112 @@ class CharacterContentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard let win = window else {
+            character?.handleClick()
+            return
+        }
+
+        isMouseDown = true
+        longPressReached = false
+        isDraggingCharacter = false
+        isLifted = false
+        mouseDownWindowOrigin = win.frame.origin
+        mouseDownScreenPoint = NSEvent.mouseLocation
+
+        longPressWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.isMouseDown, let win = self.window else { return }
+            self.longPressReached = true
+            self.character?.beginManualDrag()
+            self.installMouseUpMonitorsIfNeeded()
+
+            let liftedOrigin = NSPoint(x: win.frame.origin.x, y: win.frame.origin.y + self.manualLiftHeight)
+            self.isLifted = true
+            self.mouseDownWindowOrigin = liftedOrigin
+            self.mouseDownScreenPoint = NSEvent.mouseLocation
+
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = self.liftAnimationDuration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                win.animator().setFrameOrigin(liftedOrigin)
+            }
+        }
+        longPressWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + longPressDuration, execute: work)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let win = window, longPressReached else { return }
+
+        let currentScreenPoint = NSEvent.mouseLocation
+        let dx = currentScreenPoint.x - mouseDownScreenPoint.x
+        let dy = currentScreenPoint.y - mouseDownScreenPoint.y
+
+        if !isDraggingCharacter {
+            let distance = hypot(dx, dy)
+            guard distance >= dragActivationDistance else { return }
+            isDraggingCharacter = true
+        }
+
+        let newOrigin = NSPoint(x: mouseDownWindowOrigin.x + dx, y: mouseDownWindowOrigin.y + dy)
+        win.setFrameOrigin(newOrigin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        finishManualDragIfNeeded()
+    }
+
+    private func finishManualDragIfNeeded() {
+        isMouseDown = false
+        longPressWorkItem?.cancel()
+        longPressWorkItem = nil
+        removeMouseUpMonitors()
+
+        if isDraggingCharacter || longPressReached {
+            if isLifted, let win = window {
+                let droppedOrigin = NSPoint(x: win.frame.origin.x, y: win.frame.origin.y - manualLiftHeight)
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = self.dropAnimationDuration
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    win.animator().setFrameOrigin(droppedOrigin)
+                }, completionHandler: { [weak self] in
+                    self?.character?.endManualDrag()
+                })
+            } else {
+                character?.endManualDrag()
+            }
+            isDraggingCharacter = false
+            longPressReached = false
+            isLifted = false
+            return
+        }
+
         character?.handleClick()
+    }
+
+    private func installMouseUpMonitorsIfNeeded() {
+        guard globalMouseUpMonitor == nil, localMouseUpMonitor == nil else { return }
+
+        globalMouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.finishManualDragIfNeeded()
+            }
+        }
+
+        localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            self?.finishManualDragIfNeeded()
+            return event
+        }
+    }
+
+    private func removeMouseUpMonitors() {
+        if let monitor = globalMouseUpMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMouseUpMonitor = nil
+        }
+        if let monitor = localMouseUpMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMouseUpMonitor = nil
+        }
     }
 }

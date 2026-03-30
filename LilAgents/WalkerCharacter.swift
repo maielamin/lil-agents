@@ -37,6 +37,9 @@ class WalkerCharacter {
     var walkStartPos: CGFloat = 0.0
     var walkEndPos: CGFloat = 0.0
     var currentTravelDistance: CGFloat = 500.0
+    private var isManualDragging = false
+    private var lastKnownDockX: CGFloat = 0
+    private var lastKnownDockTopY: CGFloat = 0
     // Walk endpoints stored in pixels for consistent speed across screen switches
     var walkStartPixel: CGFloat = 0.0
     var walkEndPixel: CGFloat = 0.0
@@ -382,6 +385,44 @@ class WalkerCharacter {
 
     var resolvedTheme: PopoverTheme {
         (themeOverride ?? PopoverTheme.current).withCharacterColor(characterColor).withCustomFont()
+    }
+
+    // Temporarily pause autonomous movement while the user manually repositions the character.
+    func beginManualDrag() {
+        isManualDragging = true
+        isWalking = false
+        isPaused = true
+        pauseEndTime = CACurrentMediaTime() + 3600
+        queuePlayer.pause()
+        hideBubble()
+    }
+
+    func endManualDrag() {
+        guard isManualDragging else { return }
+
+        let travelDistance = max(currentTravelDistance, 0)
+        if travelDistance > 0 {
+            let x = window.frame.origin.x
+            let raw = (x - lastKnownDockX - currentFlipCompensation) / travelDistance
+            positionProgress = min(max(raw, 0), 1)
+        }
+
+        walkStartPos = positionProgress
+        walkEndPos = positionProgress
+        walkStartPixel = positionProgress * max(currentTravelDistance, 0)
+        walkEndPixel = walkStartPixel
+
+        // Re-anchor to dock baseline so movement continues naturally from drop point.
+        let bottomPadding = displayHeight * 0.15
+        let groundedY = lastKnownDockTopY - bottomPadding + yOffset
+        window.setFrameOrigin(NSPoint(x: window.frame.origin.x, y: groundedY))
+
+        isManualDragging = false
+        // Resume normal autonomous behavior immediately after drop.
+        pauseEndTime = CACurrentMediaTime()
+        if !isIdleForPopover && isManuallyVisible {
+            startWalk()
+        }
     }
 
     func createPopoverWindow() {
@@ -1011,6 +1052,19 @@ class WalkerCharacter {
 
     func update(dockX: CGFloat, dockWidth: CGFloat, dockTopY: CGFloat) {
         currentTravelDistance = max(dockWidth - displayWidth, 0)
+        lastKnownDockX = dockX
+        lastKnownDockTopY = dockTopY
+
+        if isManualDragging {
+            let leftMouseDown = (NSEvent.pressedMouseButtons & 1) == 1
+            if !leftMouseDown {
+                endManualDrag()
+            }
+            updatePopoverPosition()
+            updateThinkingBubble()
+            return
+        }
+
         if isIdleForPopover {
             let travelDistance = currentTravelDistance
             let x = dockX + travelDistance * positionProgress + currentFlipCompensation
