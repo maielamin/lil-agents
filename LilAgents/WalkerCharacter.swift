@@ -66,6 +66,10 @@ class WalkerCharacter {
     private var orchestrator: ConversationOrchestrator?
     private var isPendingClearConfirmation = false
     private weak var modeBadgeLabel: NSTextField?
+    // Active command mode: set when user triggers /debug, /refactor, etc.
+    // Injected as a framing context prefix on every subsequent user message until cleared.
+    private var activeCommandMode: String? // e.g. "debug", "explore"
+    private var activeCommandPrompt: String? // the actual system instruction
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
@@ -341,6 +345,10 @@ class WalkerCharacter {
 
     @objc private func refreshChat() {
         clearChat()
+        // Clear active command mode when starting a new chat
+        activeCommandMode = nil
+        activeCommandPrompt = nil
+        updateCommandModeBadge()
         let newSession = AgentProvider.current.createSession()
         newSession.systemPrompt = AgentProvider.current.systemPrompt(for: characterName)
         session = newSession
@@ -612,11 +620,18 @@ class WalkerCharacter {
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
 
+        // Prepend active command mode instruction if set
+        // This shapes how Claude responds for the duration of the mode.
+        var outgoingMessage = message
+        if let modePrompt = activeCommandPrompt {
+            outgoingMessage = "[MODE: \(activeCommandMode?.uppercased() ?? "CUSTOM")]\n\(modePrompt)\n\nUser: \(message)"
+        }
+
         // C1: Prompt assembly (gated behind orchestrationEnabled)
-        if AgentProvider.current.orchestrationEnabled, let assembled = orchestrator?.assemblePrompt(userMessage: message) {
+        if AgentProvider.current.orchestrationEnabled, let assembled = orchestrator?.assemblePrompt(userMessage: outgoingMessage) {
             session?.send(message: assembled)
         } else {
-            session?.send(message: message)
+            session?.send(message: outgoingMessage)
         }
     }
 
@@ -634,6 +649,14 @@ class WalkerCharacter {
 
     private func updateModeBadge() {
         guard let badge = modeBadgeLabel else { return }
+
+        // Command mode takes priority over orchestration mode badge
+        if let mode = activeCommandMode {
+            badge.stringValue = "● \(mode)"
+            badge.textColor = NSColor.systemCyan.withAlphaComponent(0.9)
+            return
+        }
+
         guard !AgentProvider.orchestrationKillSwitchEnabled, let usage = orchestrator?.usage else {
             badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
             return
@@ -649,6 +672,10 @@ class WalkerCharacter {
             badge.stringValue = "● emergency"
             badge.textColor = NSColor.systemRed
         }
+    }
+
+    private func updateCommandModeBadge() {
+        updateModeBadge()
     }
 
     private func logOrchestrationState(reason: String) {
@@ -764,6 +791,11 @@ class WalkerCharacter {
                 },
                 onExport: { [weak self] in
                     self?.exportConversation()
+                },
+                onActivateMode: { [weak self] modeName, instruction in
+                    self?.activeCommandMode = modeName
+                    self?.activeCommandPrompt = instruction
+                    self?.updateCommandModeBadge()
                 }
             )
             

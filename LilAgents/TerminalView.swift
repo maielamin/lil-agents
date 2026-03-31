@@ -17,6 +17,8 @@ struct CommandContext {
     let onShowToast: (String) -> Void
     let onRefreshChat: () -> Void
     let onExport: () -> Void
+    /// Activate a named mode with a system-level instruction injected into every subsequent message.
+    let onActivateMode: (_ modeName: String, _ systemInstruction: String) -> Void
 }
 
 class DebugCommandHandler: CommandHandler {
@@ -28,8 +30,15 @@ class DebugCommandHandler: CommandHandler {
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed == "/debug" || trimmed == "debug" else { return false }
-        context.onShowToast("🔍 Debug mode: input your code or error")
-        context.onAppend("DEBUG: Ready to analyze. Paste your code or describe the issue.\n")
+        context.onActivateMode("debug",
+            """
+            You are now in DEBUG mode. The user is troubleshooting a problem. \
+            Be clinical, structured, and terse. Lead with the root cause immediately. \
+            Format every response as: 1) Problem identified, 2) Likely cause, 3) Fix. \
+            No preamble. No pleasantries. Just the answer.
+            """
+        )
+        context.onShowToast("● debug mode — paste your code or error")
         return true
     }
 }
@@ -43,8 +52,15 @@ class RefactorCommandHandler: CommandHandler {
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed == "/refactor" || trimmed == "refactor" else { return false }
-        context.onShowToast("♻️ Refactor mode: paste your code")
-        context.onAppend("REFACTOR: Share the code you'd like to improve. I'll suggest cleaner patterns.\n")
+        context.onActivateMode("refactor",
+            """
+            You are now in REFACTOR mode. The user wants code improved. \
+            Always lead with the full refactored code block first. \
+            Then follow with a concise bullet list of what changed and why. \
+            No setup sentences. Code first, explanation after.
+            """
+        )
+        context.onShowToast("● refactor mode — paste the code to improve")
         return true
     }
 }
@@ -58,8 +74,15 @@ class ExploreCommandHandler: CommandHandler {
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed == "/explore" || trimmed == "explore" else { return false }
-        context.onShowToast("🌌 Let's explore together")
-        context.onAppend("EXPLORE: What's on your mind? We can dig into possibilities, ask questions, and discover something unexpected.\n")
+        context.onActivateMode("explore",
+            """
+            You are now in EXPLORE mode. The user wants to think through possibilities. \
+            Be expansive and curious. Surface adjacent ideas the user hasn't considered. \
+            Ask one thoughtful follow-up question at the end of every response. \
+            Open things up — don't close them down. This is a conversation, not a conclusion.
+            """
+        )
+        context.onShowToast("● explore mode — what's on your mind?")
         return true
     }
 }
@@ -73,8 +96,15 @@ class ReflectCommandHandler: CommandHandler {
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed == "/reflect" || trimmed == "reflect" else { return false }
-        context.onShowToast("🪞 Reflection mode")
-        context.onAppend("REFLECT: What would you like to think through? I'll help you examine it from different angles.\n")
+        context.onActivateMode("reflect",
+            """
+            You are now in REFLECT mode. The user wants to think deeply. \
+            Start each response by reframing their question — find the deeper question underneath it. \
+            Be slow, meditative, and nuanced. Examine the topic from at least two opposing angles. \
+            Invite the user to sit with what you've said before jumping to a conclusion.
+            """
+        )
+        context.onShowToast("● reflect mode — take your time")
         return true
     }
 }
@@ -88,8 +118,15 @@ class BrainstormCommandHandler: CommandHandler {
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard trimmed == "/brainstorm" || trimmed == "brainstorm" else { return false }
-        context.onShowToast("💡 Brainstorm mode: wild ideas welcome")
-        context.onAppend("BRAINSTORM: What challenge or opportunity are we brainstorming? No bad ideas—let's generate freely.\n")
+        context.onActivateMode("brainstorm",
+            """
+            You are now in BRAINSTORM mode. Generate 5–7 rapid ideas with no judgment. \
+            Format as a numbered list. Give each idea a bold one-line label, then one sentence of colour. \
+            Move fast. Be unexpected. Include at least one wild or unconventional idea. \
+            End by asking which idea the user wants to develop further.
+            """
+        )
+        context.onShowToast("● brainstorm mode — no bad ideas")
         return true
     }
 }
@@ -126,7 +163,8 @@ class CommandRegistry {
                let label = cmdDict["label"] as? String,
                let hint = cmdDict["hint"] as? String,
                let response = cmdDict["response"] as? String {
-                handlers.append(UserCommandHandler(command: cmd, label: label, hint: hint, characterName: character, response: response))
+                let modeInstruction = cmdDict["systemPrompt"] as? String
+                handlers.append(UserCommandHandler(command: cmd, label: label, hint: hint, characterName: character, response: response, modeInstruction: modeInstruction))
             }
         }
     }
@@ -156,22 +194,26 @@ class UserCommandHandler: CommandHandler {
     let hint: String
     let characterName: String
     let responseTemplate: String
-    
-    init(command: String, label: String, hint: String, characterName: String, response: String) {
+    let modeInstruction: String?  // optional system prompt injected per message when mode is active
+
+    init(command: String, label: String, hint: String, characterName: String, response: String, modeInstruction: String? = nil) {
         self.command = command
         self.label = label
         self.hint = hint
         self.characterName = characterName
         self.responseTemplate = response
+        self.modeInstruction = modeInstruction
     }
     
     func execute(context: CommandContext) -> Bool {
         let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let cmdLower = command.lowercased()
-        guard trimmed == cmdLower || trimmed == cmdLower.dropFirst() else { return false }
+        guard trimmed == cmdLower || trimmed == String(cmdLower.dropFirst()) else { return false }
         
-        context.onShowToast("📌 Custom: \(label)")
-        context.onAppend("\(responseTemplate)\n")
+        if let instruction = modeInstruction {
+            context.onActivateMode(label, instruction)
+        }
+        context.onShowToast("● \(label) mode")
         return true
     }
 }
