@@ -229,7 +229,7 @@ class WalkerCharacter {
         terminalView?.endStreaming()
 
         updatePopoverPosition()
-        popoverWindow?.orderFrontRegardless()
+        presentPopoverWithEntrance()
 
         // Set up click-outside to dismiss and complete onboarding
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
@@ -293,6 +293,8 @@ class WalkerCharacter {
 
         if let terminal = terminalView, let session = session, !session.history.isEmpty {
             terminal.replayHistory(session.history)
+        } else if didCreateSession {
+            terminalView?.showSignatureIntro(characterName: characterName)
         }
 
         if didCreateSession {
@@ -300,7 +302,7 @@ class WalkerCharacter {
         }
 
         updatePopoverPosition()
-        popoverWindow?.orderFrontRegardless()
+        presentPopoverWithEntrance()
         popoverWindow?.makeKey()
 
         if let terminal = terminalView {
@@ -345,6 +347,11 @@ class WalkerCharacter {
         orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
         wireSession(newSession)
         newSession.start()
+        terminalView?.showSignatureIntro(characterName: characterName)
+    }
+
+    private var characterInputPlaceholder: String {
+        "Ask \(characterName)…"
     }
 
     private func resetLimitPromptState() {
@@ -357,7 +364,7 @@ class WalkerCharacter {
         isAgentSleeping = false
         sleepReason = nil
         isPendingClearConfirmation = false
-        terminalView?.inputField.placeholderString = AgentProvider.current.inputPlaceholder
+        terminalView?.inputField.placeholderString = characterInputPlaceholder
     }
 
     func closePopover() {
@@ -523,6 +530,7 @@ class WalkerCharacter {
         let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: popoverWidth, height: popoverHeight - titleBarHeight - 1))
         terminal.characterColor = characterColor
         terminal.themeOverride = themeOverride
+        terminal.inputField.placeholderString = characterInputPlaceholder
         terminal.autoresizingMask = [.width, .height]
         terminal.onInterceptMessage = { [weak self] message in
             self?.handlePotentialHandoffResponse(message) ?? false
@@ -661,7 +669,7 @@ class WalkerCharacter {
     private func wakeFromSleep() {
         isAgentSleeping = false
         sleepReason = nil
-        terminalView?.inputField.placeholderString = AgentProvider.current.inputPlaceholder
+        terminalView?.inputField.placeholderString = characterInputPlaceholder
         terminalView?.showToast("Waking agent...")
         refreshChat()
     }
@@ -750,7 +758,7 @@ class WalkerCharacter {
         if trimmedCheck == "/clear" {
             if isPendingClearConfirmation {
                 isPendingClearConfirmation = false
-                clearChat()
+                refreshChat()
             } else {
                 isPendingClearConfirmation = true
                 terminalView?.showToast("This will clear your chat. Type /clear again to confirm.")
@@ -921,6 +929,22 @@ class WalkerCharacter {
         let clampedY = min(y, visibleFrame.maxY - popoverSize.height - 4)
 
         popover.setFrameOrigin(NSPoint(x: x, y: clampedY))
+    }
+
+    private func presentPopoverWithEntrance() {
+        guard let popover = popoverWindow else { return }
+        let finalFrame = popover.frame
+        let startFrame = finalFrame.offsetBy(dx: 0, dy: -10)
+        popover.alphaValue = 0
+        popover.setFrame(startFrame, display: false)
+        popover.orderFrontRegardless()
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            popover.animator().alphaValue = 1
+            popover.animator().setFrame(finalFrame, display: true)
+        }
     }
 
     // MARK: - Thinking Bubble

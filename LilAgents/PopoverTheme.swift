@@ -31,6 +31,9 @@ struct PopoverTheme {
     let bubbleCompletionText: NSColor
     let bubbleFont: NSFont
     let bubbleCornerRadius: CGFloat
+    // Character-specific styling
+    let characterAccentColor: NSColor  // Bruce = cool cyan, Jazz = warm gold
+    let animationDuration: CFTimeInterval  // Bruce = 0.2s (snappy), Jazz = 0.4s (relaxed)
 
     // MARK: - Presets
 
@@ -60,7 +63,9 @@ struct PopoverTheme {
         bubbleCompletionBorder: NSColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 0.7),
         bubbleCompletionText: NSColor(red: 0.3, green: 0.85, blue: 0.3, alpha: 1.0),
         bubbleFont: .monospacedSystemFont(ofSize: 10, weight: .medium),
-        bubbleCornerRadius: 12
+        bubbleCornerRadius: 12,
+        characterAccentColor: NSColor(red: 1.0, green: 0.4, blue: 0.0, alpha: 1.0),
+        animationDuration: 0.3
     )
 
     static let playful = PopoverTheme(
@@ -89,7 +94,9 @@ struct PopoverTheme {
         bubbleCompletionBorder: NSColor(red: 0.3, green: 0.75, blue: 0.5, alpha: 0.7),
         bubbleCompletionText: NSColor(red: 0.2, green: 0.6, blue: 0.4, alpha: 1.0),
         bubbleFont: .systemFont(ofSize: 11, weight: .semibold),
-        bubbleCornerRadius: 14
+        bubbleCornerRadius: 14,
+        characterAccentColor: NSColor(red: 0.85, green: 0.35, blue: 0.45, alpha: 1.0),
+        animationDuration: 0.3
     )
 
     static let wii = PopoverTheme(
@@ -118,7 +125,9 @@ struct PopoverTheme {
         bubbleCompletionBorder: NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 0.6),
         bubbleCompletionText: NSColor(red: 0.15, green: 0.55, blue: 0.2, alpha: 1.0),
         bubbleFont: .systemFont(ofSize: 10, weight: .semibold),
-        bubbleCornerRadius: 12
+        bubbleCornerRadius: 8,
+        characterAccentColor: NSColor(red: 0.2, green: 0.5, blue: 0.7, alpha: 1.0),
+        animationDuration: 0.3
     )
 
     static let iPod = PopoverTheme(
@@ -147,7 +156,9 @@ struct PopoverTheme {
         bubbleCompletionBorder: NSColor(red: 0.2, green: 0.5, blue: 0.2, alpha: 0.7),
         bubbleCompletionText: NSColor(red: 0.15, green: 0.4, blue: 0.15, alpha: 1.0),
         bubbleFont: NSFont(name: "Geneva", size: 10) ?? .monospacedSystemFont(ofSize: 10, weight: .medium),
-        bubbleCornerRadius: 8
+        bubbleCornerRadius: 8,
+        characterAccentColor: NSColor(red: 0.2, green: 0.4, blue: 0.2, alpha: 1.0),
+        animationDuration: 0.3
     )
 
     static let allThemes: [PopoverTheme] = [.playful, .teenageEngineering, .wii, .iPod]
@@ -192,7 +203,8 @@ struct PopoverTheme {
             bubbleBorder: border,
             bubbleText: bubbleText,
             bubbleCompletionBorder: bubbleCompletionBorder, bubbleCompletionText: bubbleCompletionText,
-            bubbleFont: bubbleFont, bubbleCornerRadius: bubbleCornerRadius
+            bubbleFont: bubbleFont, bubbleCornerRadius: bubbleCornerRadius,
+            characterAccentColor: color, animationDuration: animationDuration
         )
     }
 
@@ -214,7 +226,8 @@ struct PopoverTheme {
             inputBg: inputBg, inputCornerRadius: inputCornerRadius,
             bubbleBg: bubbleBg, bubbleBorder: bubbleBorder, bubbleText: bubbleText,
             bubbleCompletionBorder: bubbleCompletionBorder, bubbleCompletionText: bubbleCompletionText,
-            bubbleFont: smallFont, bubbleCornerRadius: bubbleCornerRadius
+            bubbleFont: smallFont, bubbleCornerRadius: bubbleCornerRadius,
+            characterAccentColor: characterAccentColor, animationDuration: animationDuration
         )
     }
 }

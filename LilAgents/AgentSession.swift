@@ -33,7 +33,7 @@ enum AgentProvider: String, CaseIterable {
     }
 
     var inputPlaceholder: String {
-        "Ask \(displayName)…  · type / for commands"
+        "Ask \(displayName)…"
     }
 
     /// Returns provider name styled per theme format.

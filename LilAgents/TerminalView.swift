@@ -2,20 +2,51 @@ import AppKit
 
 // MARK: - Command Palette (B1)
 
-private let commandPaletteCommands: [(label: String, command: String, hint: String)] = [
-    ("wake",    "/wake",    "Resume agent after sleep"),
-    ("clear",   "/clear",   "Start a new chat"),
-    ("handoff", "/handoff", "Generate handoff summary"),
-    ("export",  "/export",  "Export conversation to Markdown"),
+fileprivate struct CommandPaletteItem: Equatable {
+    let label: String
+    let command: String
+    let hint: String
+}
+
+// Character-specific commands
+private let bruceCommands: [CommandPaletteItem] = [
+    CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"),
+    CommandPaletteItem(label: "debug", command: "/debug", hint: "Analyze and troubleshoot code"),
+    CommandPaletteItem(label: "refactor", command: "/refactor", hint: "Improve code structure"),
+    CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"),
+    CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"),
 ]
+
+private let jazzCommands: [CommandPaletteItem] = [
+    CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"),
+    CommandPaletteItem(label: "explore", command: "/explore", hint: "Explore ideas and possibilities"),
+    CommandPaletteItem(label: "reflect", command: "/reflect", hint: "Think deeper about the topic"),
+    CommandPaletteItem(label: "brainstorm", command: "/brainstorm", hint: "Generate creative ideas"),
+    CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"),
+    CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"),
+]
+
+// Select commands based on current character
+private func getCommandPaletteCommands() -> [CommandPaletteItem] {
+    let characterName = AgentProvider.current.displayName.lowercased()
+    if characterName.contains("bruce") {
+        return bruceCommands
+    } else {
+        return jazzCommands
+    }
+}
+
 
 class CommandPaletteView: NSView {
     var onSelectCommand: ((String) -> Void)?
+    private let commands: [CommandPaletteItem]
     private var rows: [NSButton] = []
+    private var trackingAreasByIndex: [Int: NSTrackingArea] = [:]
+    private var selectedIndex: Int = 0
     private static let rowHeight: CGFloat = 28
 
-    static func preferredHeight() -> CGFloat {
-        CGFloat(commandPaletteCommands.count) * rowHeight + 8
+    static func preferredHeight(for commandCount: Int) -> CGFloat {
+        CGFloat(commandCount) * rowHeight + 8
     }
 
     struct PaletteTheme {
@@ -25,12 +56,14 @@ class CommandPaletteView: NSView {
         let hint: NSColor
     }
 
-    init(frame: NSRect, paletteTheme: PaletteTheme) {
+    fileprivate init(frame: NSRect, paletteTheme: PaletteTheme, commands: [CommandPaletteItem]) {
+        self.commands = commands
         super.init(frame: frame)
         build(paletteTheme: paletteTheme)
     }
 
     required init?(coder: NSCoder) {
+        self.commands = getCommandPaletteCommands()
         super.init(coder: coder)
         build(paletteTheme: PaletteTheme(
             bg: NSColor(white: 0.12, alpha: 0.96),
@@ -49,7 +82,7 @@ class CommandPaletteView: NSView {
         layer?.borderColor = paletteTheme.border.cgColor
 
         let h = Self.rowHeight
-        for (i, cmd) in commandPaletteCommands.enumerated() {
+        for (i, cmd) in commands.enumerated() {
             let y = frame.height - CGFloat(i + 1) * h - 4
             let btn = NSButton(frame: NSRect(x: 0, y: y, width: frame.width, height: h))
             btn.bezelStyle = .inline
@@ -61,6 +94,7 @@ class CommandPaletteView: NSView {
             btn.target = self
             btn.action = #selector(rowTapped(_:))
             btn.tag = i
+            btn.setButtonType(.momentaryChange)
 
             let labelField = NSTextField(labelWithString: "/\(cmd.label)")
             labelField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
@@ -80,12 +114,62 @@ class CommandPaletteView: NSView {
             addSubview(btn)
             rows.append(btn)
         }
+
+        applySelection(index: 0)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for (_, area) in trackingAreasByIndex {
+            removeTrackingArea(area)
+        }
+        trackingAreasByIndex.removeAll()
+
+        for (i, row) in rows.enumerated() {
+            let area = NSTrackingArea(
+                rect: row.frame,
+                options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                owner: self,
+                userInfo: ["index": i]
+            )
+            addTrackingArea(area)
+            trackingAreasByIndex[i] = area
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard
+            let idx = event.trackingArea?.userInfo?["index"] as? Int,
+            idx >= 0,
+            idx < rows.count
+        else { return }
+        applySelection(index: idx)
+    }
+
+    func moveSelection(delta: Int) {
+        guard !rows.isEmpty else { return }
+        let next = (selectedIndex + delta + rows.count) % rows.count
+        applySelection(index: next)
+    }
+
+    func activateSelection() {
+        guard selectedIndex >= 0, selectedIndex < commands.count else { return }
+        onSelectCommand?(commands[selectedIndex].command)
+    }
+
+    private func applySelection(index: Int) {
+        selectedIndex = index
+        for (i, row) in rows.enumerated() {
+            let alpha: CGFloat = i == selectedIndex ? 1.0 : 0.0
+            row.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12 * alpha).cgColor
+        }
     }
 
     @objc private func rowTapped(_ sender: NSButton) {
         let idx = sender.tag
-        guard idx < commandPaletteCommands.count else { return }
-        onSelectCommand?(commandPaletteCommands[idx].command)
+        guard idx < commands.count else { return }
+        applySelection(index: idx)
+        onSelectCommand?(commands[idx].command)
     }
 }
 
@@ -95,6 +179,8 @@ class ChatInputTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onPlaceholderChange: ((String?) -> Void)?
     var onDismissPalette: (() -> Void)?
+    var onPaletteMove: ((Int) -> Bool)?
+    var onActivatePalette: (() -> Bool)?
     var placeholderString: String? {
         didSet { onPlaceholderChange?(placeholderString) }
     }
@@ -107,8 +193,11 @@ class ChatInputTextView: NSTextView {
             super.keyDown(with: event)
             return
         }
+        if key == 125, onPaletteMove?(1) == true { return }   // Down arrow
+        if key == 126, onPaletteMove?(-1) == true { return }  // Up arrow
         let wantsSubmit = (key == 36 || key == 76) && !event.modifierFlags.contains(.shift)
         if wantsSubmit {
+            if onActivatePalette?() == true { return }
             onSubmit?()
             return
         }
@@ -178,6 +267,7 @@ class TerminalView: NSView, NSTextViewDelegate {
     var onSendMessage: ((String) -> Void)?
     var onInterceptMessage: ((String) -> Bool)?
     private var commandPalette: CommandPaletteView?
+    private var activePaletteCommands: [CommandPaletteItem] = []
 
     private var currentAssistantText = ""
     private var isStreaming = false
@@ -264,7 +354,8 @@ class TerminalView: NSView, NSTextViewDelegate {
         inputField.textContainerInset = NSSize(width: 8, height: 6)
         inputField.drawsBackground = false
         inputField.backgroundColor = .clear
-        inputField.insertionPointColor = t.textPrimary
+        // Make cursor lighter and more subtle
+        inputField.insertionPointColor = t.textPrimary.withAlphaComponent(0.3)
         inputField.font = t.font
         inputField.textColor = t.textPrimary
         inputField.delegate = self
@@ -278,6 +369,16 @@ class TerminalView: NSView, NSTextViewDelegate {
         }
         inputField.onDismissPalette = { [weak self] in
             self?.hideCommandPalette()
+        }
+        inputField.onPaletteMove = { [weak self] delta in
+            guard let palette = self?.commandPalette else { return false }
+            palette.moveSelection(delta: delta)
+            return true
+        }
+        inputField.onActivatePalette = { [weak self] in
+            guard let palette = self?.commandPalette else { return false }
+            palette.activateSelection()
+            return true
         }
         inputField.textContainer?.widthTracksTextView = true
         inputField.textContainer?.lineFragmentPadding = 0
@@ -341,6 +442,10 @@ class TerminalView: NSView, NSTextViewDelegate {
     // MARK: - Input
 
     @objc private func inputSubmitted() {
+        if let palette = commandPalette {
+            palette.activateSelection()
+            return
+        }
         let text = inputField.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         inputField.string = ""
@@ -363,17 +468,31 @@ class TerminalView: NSView, NSTextViewDelegate {
     }
 
     private func updateCommandPaletteVisibility() {
-        if inputField.string == "/" {
-            showCommandPalette()
-        } else {
+        let filtered = filteredPaletteCommands(for: inputField.string)
+        if filtered.isEmpty {
             hideCommandPalette()
+        } else {
+            showCommandPalette(commands: filtered)
         }
     }
 
-    private func showCommandPalette() {
-        if commandPalette != nil { return }
+    private func filteredPaletteCommands(for input: String) -> [CommandPaletteItem] {
+        guard input.hasPrefix("/") else { return [] }
+        let query = String(input.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let commands = getCommandPaletteCommands()
+        guard !query.isEmpty else { return commands }
+        return commands.filter {
+            $0.label.lowercased().contains(query)
+                || $0.command.lowercased().contains(query)
+                || $0.hint.lowercased().contains(query)
+        }
+    }
+
+    private func showCommandPalette(commands: [CommandPaletteItem]) {
+        if commandPalette != nil, activePaletteCommands == commands { return }
+        hideCommandPalette()
         let t = theme
-        let paletteHeight = CommandPaletteView.preferredHeight()
+        let paletteHeight = CommandPaletteView.preferredHeight(for: commands.count)
         let paletteWidth = inputScrollView.frame.width
         let x = inputScrollView.frame.minX
         let y = inputScrollView.frame.maxY + 4
@@ -389,7 +508,12 @@ class TerminalView: NSView, NSTextViewDelegate {
             label: t.textPrimary,
             hint: t.textDim
         )
-        let palette = CommandPaletteView(frame: NSRect(x: x, y: y, width: paletteWidth, height: paletteHeight), paletteTheme: pt)
+        let palette = CommandPaletteView(
+            frame: NSRect(x: x, y: y, width: paletteWidth, height: paletteHeight),
+            paletteTheme: pt,
+            commands: commands
+        )
+        palette.alphaValue = 0
         palette.onSelectCommand = { [weak self] command in
             self?.inputField.string = command
             self?.hideCommandPalette()
@@ -404,11 +528,22 @@ class TerminalView: NSView, NSTextViewDelegate {
         }
         addSubview(palette)
         commandPalette = palette
+        activePaletteCommands = commands
+
+        let finalFrame = palette.frame
+        palette.frame = finalFrame.offsetBy(dx: 0, dy: -6)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            palette.animator().alphaValue = 1
+            palette.animator().frame = finalFrame
+        }
     }
 
     private func hideCommandPalette() {
         commandPalette?.removeFromSuperview()
         commandPalette = nil
+        activePaletteCommands = []
     }
 
     private func updateInputPlaceholderVisibility() {
@@ -531,6 +666,33 @@ class TerminalView: NSView, NSTextViewDelegate {
         ]))
         block.append(NSAttributedString(string: "\(summary.isEmpty ? "" : summary)\n", attributes: [
             .font: t.font, .foregroundColor: t.textDim
+        ]))
+        textView.textStorage?.append(block)
+        scrollToBottom()
+    }
+
+    func showSignatureIntro(characterName: String) {
+        let lower = characterName.lowercased()
+        let line: String
+        switch lower {
+        case "bruce":
+            line = "I am Bruce. Tell me what you want to build and I will help step by step."
+        case "jazz":
+            line = "I am Jazz. Tell me what is on your mind and we will figure it out together."
+        default:
+            line = "Hi, I am ready to help."
+        }
+
+        let t = theme
+        ensureNewline()
+        let block = NSMutableAttributedString()
+        block.append(NSAttributedString(string: "HELLO ", attributes: [
+            .font: t.fontBold,
+            .foregroundColor: t.accentColor
+        ]))
+        block.append(NSAttributedString(string: "\(line)  Type / to see helpful commands.\n", attributes: [
+            .font: t.font,
+            .foregroundColor: t.textDim
         ]))
         textView.textStorage?.append(block)
         scrollToBottom()
