@@ -348,6 +348,7 @@ class WalkerCharacter {
         // Clear active command mode when starting a new chat
         activeCommandMode = nil
         activeCommandPrompt = nil
+        terminalView?.activeCommandModeName = nil
         updateCommandModeBadge()
         let newSession = AgentProvider.current.createSession()
         newSession.systemPrompt = AgentProvider.current.systemPrompt(for: characterName)
@@ -777,6 +778,21 @@ class WalkerCharacter {
         // Try character-specific command handlers first
         let trimmedCheck = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if trimmedCheck.hasPrefix("/") {
+            // /mode off — exit active mode without clearing the chat
+            if trimmedCheck == "/mode off" {
+                if let prevMode = activeCommandMode {
+                    activeCommandMode = nil
+                    activeCommandPrompt = nil
+                    terminalView?.activeCommandModeName = nil
+                    terminalView?.appendModePill(prevMode, active: false)
+                    updateCommandModeBadge()
+                    terminalView?.showToast("\(prevMode) mode off")
+                } else {
+                    terminalView?.showToast("No active mode")
+                }
+                return true
+            }
+
             let context = CommandContext(
                 message: message,
                 characterName: characterName,
@@ -795,6 +811,8 @@ class WalkerCharacter {
                 onActivateMode: { [weak self] modeName, instruction in
                     self?.activeCommandMode = modeName
                     self?.activeCommandPrompt = instruction
+                    self?.terminalView?.activeCommandModeName = modeName
+                    self?.terminalView?.appendModePill(modeName, active: true)
                     self?.updateCommandModeBadge()
                 }
             )

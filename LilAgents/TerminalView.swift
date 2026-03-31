@@ -227,12 +227,21 @@ fileprivate struct CommandPaletteItem: Equatable {
 }
 
 // Select commands based on current character — now loads from CommandRegistry
-private func getCommandPaletteCommands() -> [CommandPaletteItem] {
+// Pass activeMode to conditionally surface /mode off when a mode is active.
+private func getCommandPaletteCommands(activeMode: String? = nil) -> [CommandPaletteItem] {
     let characterName = AgentProvider.current.displayName
     let handlers = CommandRegistry.shared.commandsForCharacter(characterName)
     
     var items = handlers.map { handler in
         CommandPaletteItem(label: handler.label, command: handler.command, hint: handler.hint)
+    }
+    
+    // Show /mode off at the top when a mode is currently active
+    if let mode = activeMode {
+        items.insert(
+            CommandPaletteItem(label: "mode off", command: "/mode off", hint: "Exit ● \(mode) mode"),
+            at: 0
+        )
     }
     
     // Add system commands (wake, clear, export, handoff)
@@ -476,6 +485,8 @@ class TerminalView: NSView, NSTextViewDelegate {
     var onInterceptMessage: ((String) -> Bool)?
     private var commandPalette: CommandPaletteView?
     private var activePaletteCommands: [CommandPaletteItem] = []
+    /// Set by WalkerCharacter when a command mode is active — used to show /mode off in palette
+    var activeCommandModeName: String?
 
     private var currentAssistantText = ""
     private var isStreaming = false
@@ -687,7 +698,7 @@ class TerminalView: NSView, NSTextViewDelegate {
     private func filteredPaletteCommands(for input: String) -> [CommandPaletteItem] {
         guard input.hasPrefix("/") else { return [] }
         let query = String(input.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let commands = getCommandPaletteCommands()
+        let commands = getCommandPaletteCommands(activeMode: activeCommandModeName)
         guard !query.isEmpty else { return commands }
         return commands.filter {
             $0.label.lowercased().contains(query)
@@ -860,6 +871,29 @@ class TerminalView: NSView, NSTextViewDelegate {
         block.append(NSAttributedString(string: "\(summary)\n", attributes: [
             .font: t.font, .foregroundColor: t.textDim
         ]))
+        textView.textStorage?.append(block)
+        scrollToBottom()
+    }
+
+    func appendModePill(_ modeName: String, active: Bool) {
+        let t = theme
+        ensureNewline()
+        let block = NSMutableAttributedString()
+        if active {
+            block.append(NSAttributedString(string: "  MODE  ", attributes: [
+                .font: t.fontBold, .foregroundColor: NSColor.systemCyan.withAlphaComponent(0.9)
+            ]))
+            block.append(NSAttributedString(string: "● \(modeName) — responses are now shaped\n", attributes: [
+                .font: t.font, .foregroundColor: NSColor.systemCyan.withAlphaComponent(0.6)
+            ]))
+        } else {
+            block.append(NSAttributedString(string: "  MODE  ", attributes: [
+                .font: t.fontBold, .foregroundColor: t.textDim
+            ]))
+            block.append(NSAttributedString(string: "\(modeName) ended\n", attributes: [
+                .font: t.font, .foregroundColor: t.textDim
+            ]))
+        }
         textView.textStorage?.append(block)
         scrollToBottom()
     }
