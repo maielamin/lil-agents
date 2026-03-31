@@ -78,7 +78,11 @@ enum AgentProvider: String, CaseIterable {
             "429",
             "limit reached",
             "usage limit",
-            "exceeded"
+            "exceeded",
+            "insufficient",
+            "credit",
+            "billing",
+            "out of credits"
         ]
         return needles.contains { lower.contains($0) }
     }

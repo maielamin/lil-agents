@@ -1,5 +1,23 @@
 import AppKit
 
+class ChatInputTextView: NSTextView {
+    var onSubmit: (() -> Void)?
+    var onPlaceholderChange: ((String?) -> Void)?
+    var placeholderString: String? {
+        didSet { onPlaceholderChange?(placeholderString) }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let key = event.keyCode
+        let wantsSubmit = (key == 36 || key == 76) && !event.modifierFlags.contains(.shift)
+        if wantsSubmit {
+            onSubmit?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 class PaddedTextFieldCell: NSTextFieldCell {
     private let inset = NSSize(width: 8, height: 2)
     var fieldBackgroundColor: NSColor?
@@ -47,10 +65,15 @@ class PaddedTextFieldCell: NSTextFieldCell {
     }
 }
 
-class TerminalView: NSView {
+class TerminalView: NSView, NSTextViewDelegate {
     let scrollView = NSScrollView()
     let textView = NSTextView()
-    let inputField = NSTextField()
+    let inputField = ChatInputTextView()
+    private let inputScrollView = NSScrollView()
+    private let inputPlaceholderLabel = NSTextField(labelWithString: "")
+    private let inputMinHeight: CGFloat = 30
+    private let inputMaxHeight: CGFloat = 52
+    private var currentInputHeight: CGFloat = 30
     private let toastContainer = NSVisualEffectView()
     private let toastLabel = NSTextField(labelWithString: "")
     private var toastHideWorkItem: DispatchWorkItem?
@@ -84,13 +107,12 @@ class TerminalView: NSView {
 
     private func setupViews() {
         let t = theme
-        let inputHeight: CGFloat = 30
         let padding: CGFloat = 10
 
         scrollView.frame = NSRect(
-            x: padding, y: inputHeight + padding + 6,
+            x: padding, y: currentInputHeight + padding + 6,
             width: frame.width - padding * 2,
-            height: frame.height - inputHeight - padding - 10
+            height: frame.height - currentInputHeight - padding - 10
         )
         scrollView.autoresizingMask = [.width, .height]
         scrollView.hasVerticalScroller = true
@@ -123,30 +145,50 @@ class TerminalView: NSView {
         scrollView.documentView = textView
         addSubview(scrollView)
 
-        inputField.frame = NSRect(
+        inputScrollView.frame = NSRect(
             x: padding, y: 6,
             width: frame.width - padding * 2,
-            height: inputHeight
+            height: currentInputHeight
         )
+        inputScrollView.autoresizingMask = [.width]
+        inputScrollView.hasVerticalScroller = false
+        inputScrollView.hasHorizontalScroller = false
+        inputScrollView.borderType = .noBorder
+        inputScrollView.drawsBackground = false
+
+        inputField.frame = NSRect(x: 0, y: 0, width: inputScrollView.contentSize.width, height: currentInputHeight)
+        inputField.minSize = NSSize(width: 0, height: inputMinHeight)
+        inputField.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        inputField.isVerticallyResizable = true
+        inputField.isHorizontallyResizable = false
         inputField.autoresizingMask = [.width]
-        inputField.focusRingType = .none
-        let paddedCell = PaddedTextFieldCell(textCell: "")
-        paddedCell.isEditable = true
-        paddedCell.isScrollable = true
-        paddedCell.font = t.font
-        paddedCell.textColor = t.textPrimary
-        paddedCell.drawsBackground = false
-        paddedCell.isBezeled = false
-        paddedCell.fieldBackgroundColor = nil
-        paddedCell.fieldCornerRadius = 0
-        paddedCell.placeholderAttributedString = NSAttributedString(
-            string: AgentProvider.current.inputPlaceholder,
-            attributes: [.font: t.font, .foregroundColor: t.textDim]
-        )
-        inputField.cell = paddedCell
-        inputField.target = self
-        inputField.action = #selector(inputSubmitted)
-        addSubview(inputField)
+        inputField.textContainerInset = NSSize(width: 8, height: 6)
+        inputField.drawsBackground = false
+        inputField.backgroundColor = .clear
+        inputField.insertionPointColor = t.textPrimary
+        inputField.font = t.font
+        inputField.textColor = t.textPrimary
+        inputField.delegate = self
+        inputField.onSubmit = { [weak self] in
+            self?.inputSubmitted()
+        }
+        inputField.onPlaceholderChange = { [weak self] text in
+            self?.inputPlaceholderLabel.stringValue = text ?? ""
+            self?.updateInputPlaceholderVisibility()
+        }
+        inputField.textContainer?.widthTracksTextView = true
+        inputField.textContainer?.lineFragmentPadding = 0
+        inputField.textContainer?.lineBreakMode = .byWordWrapping
+        inputField.placeholderString = AgentProvider.current.inputPlaceholder
+        inputScrollView.documentView = inputField
+        addSubview(inputScrollView)
+
+        inputPlaceholderLabel.font = t.font
+        inputPlaceholderLabel.textColor = t.textDim
+        inputPlaceholderLabel.frame = NSRect(x: padding + 8, y: 12, width: frame.width - padding * 2 - 16, height: 16)
+        inputPlaceholderLabel.autoresizingMask = [.width]
+        addSubview(inputPlaceholderLabel)
+        updateInputPlaceholderVisibility()
 
         toastContainer.material = .hudWindow
         toastContainer.blendingMode = .withinWindow
@@ -172,6 +214,15 @@ class TerminalView: NSView {
 
     override func layout() {
         super.layout()
+        let padding: CGFloat = 10
+        inputScrollView.frame = NSRect(x: padding, y: 6, width: frame.width - padding * 2, height: currentInputHeight)
+        inputPlaceholderLabel.frame = NSRect(x: padding + 8, y: 12, width: frame.width - padding * 2 - 16, height: 16)
+        scrollView.frame = NSRect(
+            x: padding,
+            y: currentInputHeight + padding + 6,
+            width: frame.width - padding * 2,
+            height: frame.height - currentInputHeight - padding - 10
+        )
         layoutToast()
     }
 
@@ -187,9 +238,11 @@ class TerminalView: NSView {
     // MARK: - Input
 
     @objc private func inputSubmitted() {
-        let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = inputField.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        inputField.stringValue = ""
+        inputField.string = ""
+        updateInputHeightIfNeeded()
+        updateInputPlaceholderVisibility()
 
         appendUser(text)
         if onInterceptMessage?(text) == true {
@@ -198,6 +251,26 @@ class TerminalView: NSView {
         isStreaming = true
         currentAssistantText = ""
         onSendMessage?(text)
+    }
+
+    func textDidChange(_ notification: Notification) {
+        updateInputHeightIfNeeded()
+        updateInputPlaceholderVisibility()
+    }
+
+    private func updateInputPlaceholderVisibility() {
+        inputPlaceholderLabel.isHidden = !inputField.string.isEmpty || !inputField.isEditable
+    }
+
+    private func updateInputHeightIfNeeded() {
+        guard let layout = inputField.layoutManager, let container = inputField.textContainer else { return }
+        layout.ensureLayout(for: container)
+        let used = layout.usedRect(for: container).height + (inputField.textContainerInset.height * 2)
+        let clamped = max(inputMinHeight, min(inputMaxHeight, ceil(used)))
+        inputScrollView.hasVerticalScroller = used > inputMaxHeight
+        guard abs(clamped - currentInputHeight) > 0.5 else { return }
+        currentInputHeight = clamped
+        needsLayout = true
     }
 
     // MARK: - Append Methods

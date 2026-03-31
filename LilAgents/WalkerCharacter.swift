@@ -61,6 +61,8 @@ class WalkerCharacter {
     private var isSmartReminderEnabled = false
     private var didShowProactiveLimitPrompt = false
     private var isAwaitingHandoffConfirmation = false
+    private var isAgentSleeping = false
+    private var sleepReason: String?
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
@@ -344,6 +346,9 @@ class WalkerCharacter {
         isSmartReminderEnabled = false
         didShowProactiveLimitPrompt = false
         isAwaitingHandoffConfirmation = false
+        isAgentSleeping = false
+        sleepReason = nil
+        terminalView?.inputField.placeholderString = AgentProvider.current.inputPlaceholder
     }
 
     func closePopover() {
@@ -528,7 +533,7 @@ class WalkerCharacter {
         session.onError = { [weak self] text in
             self?.terminalView?.appendError(text)
             if AgentProvider.isLikelyLimitMessage(text) {
-                self?.showLimitPrompt(reason: "limit signal detected")
+                self?.enterSleepMode(reason: "credit limit reached")
             }
         }
 
@@ -549,9 +554,30 @@ class WalkerCharacter {
     }
 
     private func handleOutgoingUserMessage(_ message: String) {
+        if isAgentSleeping {
+            terminalView?.showToast("Agent is sleeping. Type /wake to resume.")
+            return
+        }
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
         session?.send(message: message)
+    }
+
+    private func enterSleepMode(reason: String) {
+        guard !isAgentSleeping else { return }
+        isAgentSleeping = true
+        sleepReason = reason
+        terminalView?.appendToolResult(summary: "Sleep mode enabled (\(reason)). Add credits, then type /wake to resume.", isError: true)
+        terminalView?.showToast("Agent sleeping. Type /wake when ready.")
+        terminalView?.inputField.placeholderString = "Agent sleeping. Type /wake"
+    }
+
+    private func wakeFromSleep() {
+        isAgentSleeping = false
+        sleepReason = nil
+        terminalView?.inputField.placeholderString = AgentProvider.current.inputPlaceholder
+        terminalView?.showToast("Waking agent...")
+        refreshChat()
     }
 
     private func maybeShowProactiveLimitPrompt() {
@@ -593,6 +619,20 @@ class WalkerCharacter {
     }
 
     private func handlePotentialHandoffResponse(_ message: String) -> Bool {
+        if isAgentSleeping {
+            let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if lower == "/wake" || lower == "wake" || lower == "/resume" {
+                wakeFromSleep()
+                return true
+            }
+            if let reason = sleepReason {
+                terminalView?.showToast("Sleeping (\(reason)). Type /wake")
+            } else {
+                terminalView?.showToast("Agent sleeping. Type /wake")
+            }
+            return true
+        }
+
         if isAwaitingReminderPreference {
             let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if lower == "y" || lower == "yes" {
