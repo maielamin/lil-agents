@@ -63,6 +63,7 @@ class WalkerCharacter {
     private var isAwaitingHandoffConfirmation = false
     private var isAgentSleeping = false
     private var sleepReason: String?
+    private var orchestrator: ConversationOrchestrator?
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
@@ -275,6 +276,7 @@ class WalkerCharacter {
             resetLimitPromptState()
             let newSession = AgentProvider.current.createSession()
             session = newSession
+            orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
             wireSession(newSession)
             newSession.start()
             didCreateSession = true
@@ -326,6 +328,7 @@ class WalkerCharacter {
     func clearChat() {
         session?.terminate()
         session = nil
+        orchestrator?.resetSession()
         resetLimitPromptState()
         terminalView?.textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
         currentStreamingText = ""
@@ -335,6 +338,7 @@ class WalkerCharacter {
         clearChat()
         let newSession = AgentProvider.current.createSession()
         session = newSession
+        orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
         wireSession(newSession)
         newSession.start()
     }
@@ -520,19 +524,25 @@ class WalkerCharacter {
 
     private func wireSession(_ session: any AgentSession, providerName: String = AgentProvider.current.displayName) {
         session.onText = { [weak self] text in
+            self?.orchestrator?.recordAssistantChunk(text)
+            self?.maybeShowBudgetNotice()
             self?.currentStreamingText += text
             self?.terminalView?.appendStreamingText(text)
         }
 
         session.onTurnComplete = { [weak self] in
+            self?.orchestrator?.recordTurnComplete()
+            self?.logOrchestrationState(reason: "turn-complete")
             self?.terminalView?.endStreaming()
             self?.playCompletionSound()
             self?.showCompletionBubble()
         }
 
         session.onError = { [weak self] text in
+            let isLimitSignal = AgentProvider.isLikelyLimitMessage(text)
+            self?.orchestrator?.recordError(isLimitSignal: isLimitSignal)
             self?.terminalView?.appendError(text)
-            if AgentProvider.isLikelyLimitMessage(text) {
+            if isLimitSignal {
                 self?.enterSleepMode(reason: "credit limit reached")
             }
         }
@@ -554,13 +564,43 @@ class WalkerCharacter {
     }
 
     private func handleOutgoingUserMessage(_ message: String) {
+        if AgentProvider.orchestrationKillSwitchEnabled {
+            session?.send(message: message)
+            return
+        }
+
         if isAgentSleeping {
             terminalView?.showToast("Agent is sleeping. Type /wake to resume.")
             return
         }
+
+        if orchestrator == nil {
+            orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
+        }
+
+        orchestrator?.recordUserMessage(message)
+        maybeShowBudgetNotice()
+
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
         session?.send(message: message)
+    }
+
+    private func maybeShowBudgetNotice() {
+        guard let notice = orchestrator?.consumeBudgetNotice() else { return }
+        switch notice {
+        case .nearSoftLimit:
+            terminalView?.showToast("Near context budget. Responses may become shorter.")
+        case .nearHardLimit:
+            terminalView?.showToast("Near hard budget. Consider handoff or /wake flow soon.")
+        }
+        logOrchestrationState(reason: "budget-notice")
+    }
+
+    private func logOrchestrationState(reason: String) {
+        guard AgentProvider.orchestrationDebugLogsEnabled else { return }
+        guard let usage = orchestrator?.usage else { return }
+        print("[orchestration] \(reason) provider=\(AgentProvider.current.rawValue) mode=\(usage.mode.rawValue) turns=\(usage.turnCount) estChars=\(usage.estimatedChars) errors=\(usage.errorStreak) limits=\(usage.limitSignalsSeen)")
     }
 
     private func enterSleepMode(reason: String) {

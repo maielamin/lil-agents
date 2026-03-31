@@ -9,6 +9,10 @@ enum AgentProvider: String, CaseIterable {
     private static let smartReminderPrefix = "smartReminderEnabled."
     private static let claudeSaverModeKey = "claudeSaverModeEnabled"
     private static let claudePowerModeKey = "claudePowerModeEnabled"
+    private static let orchestrationEnabledPrefix = "orchestrationEnabled."
+    private static let orchestrationSafeModeKey = "orchestrationSafeMode"
+    private static let orchestrationKillSwitchKey = "orchestrationKillSwitch"
+    private static let orchestrationDebugLogsKey = "orchestrationDebugLogs"
 
     static var current: AgentProvider {
         get {
@@ -118,6 +122,37 @@ enum AgentProvider: String, CaseIterable {
         get { UserDefaults.standard.bool(forKey: claudePowerModeKey) }
         set { UserDefaults.standard.set(newValue, forKey: claudePowerModeKey) }
     }
+
+    var orchestrationEnabledKey: String {
+        "\(Self.orchestrationEnabledPrefix)\(rawValue)"
+    }
+
+    var orchestrationEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: orchestrationEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: orchestrationEnabledKey) }
+    }
+
+    static var orchestrationSafeModeEnabled: Bool {
+        get {
+            let defaults = UserDefaults.standard
+            if defaults.object(forKey: orchestrationSafeModeKey) == nil {
+                defaults.set(true, forKey: orchestrationSafeModeKey)
+                return true
+            }
+            return defaults.bool(forKey: orchestrationSafeModeKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: orchestrationSafeModeKey) }
+    }
+
+    static var orchestrationKillSwitchEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: orchestrationKillSwitchKey) }
+        set { UserDefaults.standard.set(newValue, forKey: orchestrationKillSwitchKey) }
+    }
+
+    static var orchestrationDebugLogsEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: orchestrationDebugLogsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: orchestrationDebugLogsKey) }
+    }
 }
 
 // MARK: - Title Format
@@ -163,4 +198,126 @@ protocol AgentSession: AnyObject {
     func start()
     func send(message: String)
     func terminate()
+}
+
+// MARK: - Orchestration Tracking
+
+enum OrchestrationMode: String, Codable {
+    case fullHistory
+    case compressedHistory
+    case emergency
+}
+
+enum BudgetNotice {
+    case nearSoftLimit
+    case nearHardLimit
+}
+
+struct UsageState: Codable {
+    var totalUserChars: Int = 0
+    var totalAssistantChars: Int = 0
+    var turnCount: Int = 0
+    var errorStreak: Int = 0
+    var limitSignalsSeen: Int = 0
+    var sessionStartedAt: Date = Date()
+    var lastTurnAt: Date = Date()
+    var maxNoticeLevel: Int = 0
+
+    var estimatedChars: Int {
+        totalUserChars + totalAssistantChars
+    }
+
+    var mode: OrchestrationMode {
+        if estimatedChars >= 22000 {
+            return .emergency
+        }
+        if estimatedChars >= 12000 {
+            return .compressedHistory
+        }
+        return .fullHistory
+    }
+}
+
+final class ConversationOrchestrator {
+    private let provider: AgentProvider
+    private let defaults = UserDefaults.standard
+    private let softThreshold = 12000
+    private let hardThreshold = 22000
+
+    private(set) var usage: UsageState
+
+    init(provider: AgentProvider) {
+        self.provider = provider
+        self.usage = Self.loadUsage(from: defaults, for: provider) ?? UsageState()
+    }
+
+    func resetSession() {
+        usage = UsageState()
+        save()
+    }
+
+    func recordUserMessage(_ message: String) {
+        usage.turnCount += 1
+        usage.totalUserChars += message.count
+        usage.lastTurnAt = Date()
+        save()
+    }
+
+    func recordAssistantChunk(_ text: String) {
+        usage.totalAssistantChars += text.count
+        usage.lastTurnAt = Date()
+        save()
+    }
+
+    func recordTurnComplete() {
+        usage.errorStreak = 0
+        usage.lastTurnAt = Date()
+        save()
+    }
+
+    func recordError(isLimitSignal: Bool) {
+        usage.errorStreak += 1
+        if isLimitSignal {
+            usage.limitSignalsSeen += 1
+        }
+        usage.lastTurnAt = Date()
+        save()
+    }
+
+    func consumeBudgetNotice() -> BudgetNotice? {
+        if usage.estimatedChars >= hardThreshold {
+            guard usage.maxNoticeLevel < 2 else { return nil }
+            usage.maxNoticeLevel = 2
+            save()
+            return .nearHardLimit
+        }
+
+        if usage.estimatedChars >= softThreshold {
+            guard usage.maxNoticeLevel < 1 else { return nil }
+            usage.maxNoticeLevel = 1
+            save()
+            return .nearSoftLimit
+        }
+
+        return nil
+    }
+
+    private var storageKey: String {
+        "usage.\(provider.rawValue).state"
+    }
+
+    private func save() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(usage) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+
+    private static func loadUsage(from defaults: UserDefaults, for provider: AgentProvider) -> UsageState? {
+        let key = "usage.\(provider.rawValue).state"
+        guard let data = defaults.data(forKey: key) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(UsageState.self, from: data)
+    }
 }
