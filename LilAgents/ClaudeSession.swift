@@ -13,6 +13,7 @@ class ClaudeSession: AgentSession {
     private static var binaryPath: String?
     private var launchedWithMCP = false
     private var sessionGeneration = 0
+    var systemPrompt: String?
 
     private static let gmailHint = """
         [System note: you are running on macOS and have bash tool access. \
@@ -147,6 +148,11 @@ class ClaudeSession: AgentSession {
         }
 
         var outgoing = message
+        // Consume system prompt on the first real send — prepend to outgoing only, not displayMessage
+        if let sp = systemPrompt {
+            outgoing = "SYSTEM:\n\(sp)\n\n\(outgoing)"
+            systemPrompt = nil
+        }
         let lower = outgoing.lowercased()
         let isEmailRequest = Self.emailKeywords.contains(where: { lower.contains($0) })
         if isEmailRequest {

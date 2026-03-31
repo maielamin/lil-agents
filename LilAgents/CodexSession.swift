@@ -12,6 +12,7 @@ class CodexSession: AgentSession {
     private(set) var isRunning = false
     private(set) var isBusy = false
     private static var binaryPath: String?
+    var systemPrompt: String?
 
     var onText: ((String) -> Void)?
     var onError: ((String) -> Void)?

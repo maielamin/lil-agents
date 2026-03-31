@@ -10,6 +10,7 @@ class CopilotSession: AgentSession {
     private var isFirstTurn = true
     private var useJsonOutput = true
     private static var binaryPath: String?
+    var systemPrompt: String?
 
     var onText: ((String) -> Void)?
     var onError: ((String) -> Void)?

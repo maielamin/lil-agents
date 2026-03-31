@@ -64,6 +64,8 @@ class WalkerCharacter {
     private var isAgentSleeping = false
     private var sleepReason: String?
     private var orchestrator: ConversationOrchestrator?
+    private var isPendingClearConfirmation = false
+    private weak var modeBadgeLabel: NSTextField?
     weak var controller: LilAgentsController?
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
@@ -275,6 +277,7 @@ class WalkerCharacter {
         if session == nil {
             resetLimitPromptState()
             let newSession = AgentProvider.current.createSession()
+            newSession.systemPrompt = AgentProvider.current.systemPrompt(for: characterName)
             session = newSession
             orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
             wireSession(newSession)
@@ -337,6 +340,7 @@ class WalkerCharacter {
     @objc private func refreshChat() {
         clearChat()
         let newSession = AgentProvider.current.createSession()
+        newSession.systemPrompt = AgentProvider.current.systemPrompt(for: characterName)
         session = newSession
         orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
         wireSession(newSession)
@@ -352,6 +356,7 @@ class WalkerCharacter {
         isAwaitingHandoffConfirmation = false
         isAgentSleeping = false
         sleepReason = nil
+        isPendingClearConfirmation = false
         terminalView?.inputField.placeholderString = AgentProvider.current.inputPlaceholder
     }
 
@@ -500,6 +505,16 @@ class WalkerCharacter {
         refreshBtn.action = #selector(refreshChat)
         titleBar.addSubview(refreshBtn)
 
+        // Mode badge pill (A1)
+        let badge = NSTextField(labelWithString: "")
+        badge.font = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
+        badge.textColor = t.titleText.withAlphaComponent(0.0)
+        badge.frame = NSRect(x: popoverWidth - 80, y: (titleBarHeight - 14) / 2, width: 52, height: 14)
+        badge.alignment = .right
+        titleBar.addSubview(badge)
+        modeBadgeLabel = badge
+        updateModeBadge()
+
         let sep = NSView(frame: NSRect(x: 0, y: popoverHeight - titleBarHeight - 1, width: popoverWidth, height: 1))
         sep.wantsLayer = true
         sep.layer?.backgroundColor = t.separatorColor.cgColor
@@ -532,7 +547,12 @@ class WalkerCharacter {
 
         session.onTurnComplete = { [weak self] in
             self?.orchestrator?.recordTurnComplete()
+            // C1: Flush accumulated streaming text as a single assistant turn
+            if let text = self?.currentStreamingText, !text.isEmpty {
+                self?.orchestrator?.recordAssistantTurn(text)
+            }
             self?.logOrchestrationState(reason: "turn-complete")
+            self?.updateModeBadge()
             self?.terminalView?.endStreaming()
             self?.playCompletionSound()
             self?.showCompletionBubble()
@@ -583,7 +603,13 @@ class WalkerCharacter {
 
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
-        session?.send(message: message)
+
+        // C1: Prompt assembly (gated behind orchestrationEnabled)
+        if AgentProvider.current.orchestrationEnabled, let assembled = orchestrator?.assemblePrompt(userMessage: message) {
+            session?.send(message: assembled)
+        } else {
+            session?.send(message: message)
+        }
     }
 
     private func maybeShowBudgetNotice() {
@@ -594,7 +620,27 @@ class WalkerCharacter {
         case .nearHardLimit:
             terminalView?.showToast("Near hard budget. Consider handoff or /wake flow soon.")
         }
+        updateModeBadge()
         logOrchestrationState(reason: "budget-notice")
+    }
+
+    private func updateModeBadge() {
+        guard let badge = modeBadgeLabel else { return }
+        guard !AgentProvider.orchestrationKillSwitchEnabled, let usage = orchestrator?.usage else {
+            badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
+            return
+        }
+        switch usage.mode {
+        case .fullHistory:
+            badge.stringValue = ""
+            badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
+        case .compressedHistory:
+            badge.stringValue = "● compressed"
+            badge.textColor = NSColor.systemOrange.withAlphaComponent(0.85)
+        case .emergency:
+            badge.stringValue = "● emergency"
+            badge.textColor = NSColor.systemRed
+        }
     }
 
     private func logOrchestrationState(reason: String) {
@@ -693,6 +739,34 @@ class WalkerCharacter {
             return true
         }
 
+        // B2: /export command
+        let trimmedCheck = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmedCheck == "/export" || trimmedCheck == "export" {
+            exportConversation()
+            return true
+        }
+
+        // B1: /clear command — requires confirmation to prevent accidental data loss
+        if trimmedCheck == "/clear" {
+            if isPendingClearConfirmation {
+                isPendingClearConfirmation = false
+                clearChat()
+            } else {
+                isPendingClearConfirmation = true
+                terminalView?.showToast("This will clear your chat. Type /clear again to confirm.")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                    self?.isPendingClearConfirmation = false
+                }
+            }
+            return true
+        }
+
+        // B1: /handoff command (from palette)
+        if trimmedCheck == "/handoff" {
+            showLimitPrompt(reason: "manual handoff requested")
+            return true
+        }
+
         guard isAwaitingHandoffConfirmation else { return false }
         let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if lower == "y" || lower == "yes" {
@@ -787,6 +861,42 @@ class WalkerCharacter {
             "",
             risks
         ].joined(separator: "\n")
+    }
+
+    private func exportConversation() {
+        let messages = session?.history ?? []
+        guard !messages.isEmpty else {
+            terminalView?.showToast("Nothing to export yet.")
+            return
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let dateStr = formatter.string(from: Date())
+        let fileName = "lil-agents-export-\(dateStr).md"
+
+        var lines: [String] = ["# lil-agents Conversation Export", "", "**Character:** \(characterName)", "**Provider:** \(AgentProvider.current.displayName)", "**Date:** \(dateStr)", ""]
+        for msg in messages {
+            switch msg.role {
+            case .user:
+                lines.append("**You:** \(msg.text)\n")
+            case .assistant:
+                lines.append("**\(characterName):** \(msg.text)\n")
+            case .error:
+                lines.append("**Error:** \(msg.text)\n")
+            case .toolUse, .toolResult:
+                break
+            }
+        }
+        let markdown = lines.joined(separator: "\n")
+
+        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if let url = docsURL?.appendingPathComponent(fileName) {
+            try? markdown.write(to: url, atomically: true, encoding: .utf8)
+        }
+        copyToClipboard(markdown)
+        terminalView?.appendToolResult(summary: "Conversation exported to ~/Documents/\(fileName) and copied to clipboard.", isError: false)
+        terminalView?.showToast("Exported to ~/Documents/\(fileName)")
     }
 
     private func formatToolInput(_ input: [String: Any]) -> String {

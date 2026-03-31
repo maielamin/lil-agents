@@ -33,7 +33,7 @@ enum AgentProvider: String, CaseIterable {
     }
 
     var inputPlaceholder: String {
-        "Ask \(displayName)..."
+        "Ask \(displayName)…  · type / for commands"
     }
 
     /// Returns provider name styled per theme format.
@@ -132,6 +132,18 @@ enum AgentProvider: String, CaseIterable {
         set { UserDefaults.standard.set(newValue, forKey: orchestrationEnabledKey) }
     }
 
+    // A2: Character persona — injected as system context on the first message
+    func systemPrompt(for characterName: String) -> String? {
+        switch characterName.lowercased() {
+        case "bruce":
+            return "You are Bruce, a direct and concise coding assistant. Keep answers short, professional, and focused on the task. Avoid fluff and unnecessary pleasantries."
+        case "jazz":
+            return "You are Jazz, a friendly and enthusiastic AI assistant. Keep answers warm, encouraging, and approachable. You enjoy helping and it shows."
+        default:
+            return nil
+        }
+    }
+
     static var orchestrationSafeModeEnabled: Bool {
         get {
             let defaults = UserDefaults.standard
@@ -198,6 +210,9 @@ protocol AgentSession: AnyObject {
     func start()
     func send(message: String)
     func terminate()
+
+    /// Optional system prompt injected into the first outbound message. Set before calling start().
+    var systemPrompt: String? { get set }
 }
 
 // MARK: - Orchestration Tracking
@@ -319,5 +334,68 @@ final class ConversationOrchestrator {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(UsageState.self, from: data)
+    }
+
+    // MARK: - C1 Prompt Assembly
+
+    private struct RecentTurn {
+        let role: String   // "user" or "assistant"
+        let text: String
+    }
+
+    private var recentTurns: [RecentTurn] = []
+    private let recentTurnsWindowSize = 6
+
+    func recordUserTurn(_ text: String) {
+        recentTurns.append(RecentTurn(role: "user", text: text))
+        trimRecentTurns()
+    }
+
+    func recordAssistantTurn(_ text: String) {
+        recentTurns.append(RecentTurn(role: "assistant", text: text))
+        trimRecentTurns()
+    }
+
+    private func trimRecentTurns() {
+        // Keep last N turns (user + assistant pairs = window * 2)
+        let maxTurns = recentTurnsWindowSize * 2
+        if recentTurns.count > maxTurns {
+            recentTurns.removeFirst(recentTurns.count - maxTurns)
+        }
+    }
+
+    /// Returns an assembled prompt or nil if no assembly is needed (fullHistory mode).
+    func assemblePrompt(userMessage: String) -> String? {
+        switch usage.mode {
+        case .fullHistory:
+            // Record and pass through untouched
+            recordUserTurn(userMessage)
+            return nil
+
+        case .compressedHistory:
+            recordUserTurn(userMessage)
+            let contextBlock = buildContextBlock()
+            guard !contextBlock.isEmpty else { return nil }
+            return "[Conversation context]\n\(contextBlock)\n\n[Current message]\n\(userMessage)"
+
+        case .emergency:
+            recordUserTurn(userMessage)
+            let contextBlock = buildContextBlock(maxAssistantChars: 400)
+            let prefix = contextBlock.isEmpty ? "" : "[Context summary]\n\(contextBlock)\n\n"
+            return "\(prefix)[Instructions: Context is near limit. Please be concise.]\n\n\(userMessage)"
+        }
+    }
+
+    private func buildContextBlock(maxAssistantChars: Int = 800) -> String {
+        // Take the most recent assistant turns as a summary
+        let assistantParts = recentTurns
+            .filter { $0.role == "assistant" }
+            .suffix(3)
+            .map { $0.text }
+            .joined(separator: " [...] ")
+        let truncated = assistantParts.count > maxAssistantChars
+            ? String(assistantParts.prefix(maxAssistantChars)) + "…"
+            : assistantParts
+        return truncated
     }
 }

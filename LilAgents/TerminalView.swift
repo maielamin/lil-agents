@@ -1,14 +1,112 @@
 import AppKit
 
+// MARK: - Command Palette (B1)
+
+private let commandPaletteCommands: [(label: String, command: String, hint: String)] = [
+    ("wake",    "/wake",    "Resume agent after sleep"),
+    ("clear",   "/clear",   "Start a new chat"),
+    ("handoff", "/handoff", "Generate handoff summary"),
+    ("export",  "/export",  "Export conversation to Markdown"),
+]
+
+class CommandPaletteView: NSView {
+    var onSelectCommand: ((String) -> Void)?
+    private var rows: [NSButton] = []
+    private static let rowHeight: CGFloat = 28
+
+    static func preferredHeight() -> CGFloat {
+        CGFloat(commandPaletteCommands.count) * rowHeight + 8
+    }
+
+    struct PaletteTheme {
+        let bg: NSColor
+        let border: NSColor
+        let label: NSColor
+        let hint: NSColor
+    }
+
+    init(frame: NSRect, paletteTheme: PaletteTheme) {
+        super.init(frame: frame)
+        build(paletteTheme: paletteTheme)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        build(paletteTheme: PaletteTheme(
+            bg: NSColor(white: 0.12, alpha: 0.96),
+            border: NSColor.white.withAlphaComponent(0.12),
+            label: NSColor.white.withAlphaComponent(0.9),
+            hint: NSColor.white.withAlphaComponent(0.4)
+        ))
+    }
+
+    private func build(paletteTheme: PaletteTheme) {
+        wantsLayer = true
+        layer?.backgroundColor = paletteTheme.bg.cgColor
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+        layer?.borderWidth = 0.5
+        layer?.borderColor = paletteTheme.border.cgColor
+
+        let h = Self.rowHeight
+        for (i, cmd) in commandPaletteCommands.enumerated() {
+            let y = frame.height - CGFloat(i + 1) * h - 4
+            let btn = NSButton(frame: NSRect(x: 0, y: y, width: frame.width, height: h))
+            btn.bezelStyle = .inline
+            btn.isBordered = false
+            btn.title = ""
+            btn.wantsLayer = true
+            btn.layer?.backgroundColor = NSColor.clear.cgColor
+            btn.autoresizingMask = [.width]
+            btn.target = self
+            btn.action = #selector(rowTapped(_:))
+            btn.tag = i
+
+            let labelField = NSTextField(labelWithString: "/\(cmd.label)")
+            labelField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+            labelField.textColor = paletteTheme.label
+            labelField.frame = NSRect(x: 12, y: (h - 14) / 2, width: 80, height: 14)
+            labelField.isEnabled = false
+            btn.addSubview(labelField)
+
+            let hintField = NSTextField(labelWithString: cmd.hint)
+            hintField.font = NSFont.systemFont(ofSize: 10)
+            hintField.textColor = paletteTheme.hint
+            hintField.frame = NSRect(x: 100, y: (h - 12) / 2, width: frame.width - 110, height: 12)
+            hintField.autoresizingMask = [.width]
+            hintField.isEnabled = false
+            btn.addSubview(hintField)
+
+            addSubview(btn)
+            rows.append(btn)
+        }
+    }
+
+    @objc private func rowTapped(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx < commandPaletteCommands.count else { return }
+        onSelectCommand?(commandPaletteCommands[idx].command)
+    }
+}
+
+// MARK: - ChatInputTextView
+
 class ChatInputTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onPlaceholderChange: ((String?) -> Void)?
+    var onDismissPalette: (() -> Void)?
     var placeholderString: String? {
         didSet { onPlaceholderChange?(placeholderString) }
     }
 
     override func keyDown(with event: NSEvent) {
         let key = event.keyCode
+        // Escape (53) dismisses palette if open
+        if key == 53 {
+            onDismissPalette?()
+            super.keyDown(with: event)
+            return
+        }
         let wantsSubmit = (key == 36 || key == 76) && !event.modifierFlags.contains(.shift)
         if wantsSubmit {
             onSubmit?()
@@ -79,6 +177,7 @@ class TerminalView: NSView, NSTextViewDelegate {
     private var toastHideWorkItem: DispatchWorkItem?
     var onSendMessage: ((String) -> Void)?
     var onInterceptMessage: ((String) -> Bool)?
+    private var commandPalette: CommandPaletteView?
 
     private var currentAssistantText = ""
     private var isStreaming = false
@@ -170,11 +269,15 @@ class TerminalView: NSView, NSTextViewDelegate {
         inputField.textColor = t.textPrimary
         inputField.delegate = self
         inputField.onSubmit = { [weak self] in
+            self?.hideCommandPalette()
             self?.inputSubmitted()
         }
         inputField.onPlaceholderChange = { [weak self] text in
             self?.inputPlaceholderLabel.stringValue = text ?? ""
             self?.updateInputPlaceholderVisibility()
+        }
+        inputField.onDismissPalette = { [weak self] in
+            self?.hideCommandPalette()
         }
         inputField.textContainer?.widthTracksTextView = true
         inputField.textContainer?.lineFragmentPadding = 0
@@ -256,6 +359,56 @@ class TerminalView: NSView, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         updateInputHeightIfNeeded()
         updateInputPlaceholderVisibility()
+        updateCommandPaletteVisibility()
+    }
+
+    private func updateCommandPaletteVisibility() {
+        if inputField.string == "/" {
+            showCommandPalette()
+        } else {
+            hideCommandPalette()
+        }
+    }
+
+    private func showCommandPalette() {
+        if commandPalette != nil { return }
+        let t = theme
+        let paletteHeight = CommandPaletteView.preferredHeight()
+        let paletteWidth = inputScrollView.frame.width
+        let x = inputScrollView.frame.minX
+        let y = inputScrollView.frame.maxY + 4
+        // Derive palette colors from the active theme so it always matches the popover material
+        let brightness = t.popoverBg.redComponent * 0.299 + t.popoverBg.greenComponent * 0.587 + t.popoverBg.blueComponent * 0.114
+        let isDark = brightness < 0.5
+        let paletteBg = isDark
+            ? t.popoverBg.blended(withFraction: 0.15, of: .white) ?? t.popoverBg
+            : t.popoverBg.blended(withFraction: 0.08, of: .black) ?? t.popoverBg
+        let pt = CommandPaletteView.PaletteTheme(
+            bg: paletteBg.withAlphaComponent(0.97),
+            border: t.popoverBorder.withAlphaComponent(0.4),
+            label: t.textPrimary,
+            hint: t.textDim
+        )
+        let palette = CommandPaletteView(frame: NSRect(x: x, y: y, width: paletteWidth, height: paletteHeight), paletteTheme: pt)
+        palette.onSelectCommand = { [weak self] command in
+            self?.inputField.string = command
+            self?.hideCommandPalette()
+            self?.inputField.string = ""
+            self?.updateInputHeightIfNeeded()
+            self?.updateInputPlaceholderVisibility()
+            if let intercept = self?.onInterceptMessage, intercept(command) { return }
+            self?.isStreaming = true
+            self?.currentAssistantText = ""
+            self?.appendUser(command)
+            self?.onSendMessage?(command)
+        }
+        addSubview(palette)
+        commandPalette = palette
+    }
+
+    private func hideCommandPalette() {
+        commandPalette?.removeFromSuperview()
+        commandPalette = nil
     }
 
     private func updateInputPlaceholderVisibility() {
