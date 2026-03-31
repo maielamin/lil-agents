@@ -1,5 +1,181 @@
 import AppKit
 
+// MARK: - Command Handler System
+
+protocol CommandHandler {
+    var command: String { get }
+    var label: String { get }
+    var hint: String { get }
+    var characterName: String { get }
+    func execute(context: CommandContext) -> Bool
+}
+
+struct CommandContext {
+    let message: String
+    let characterName: String
+    let onAppend: (String) -> Void
+    let onShowToast: (String) -> Void
+    let onRefreshChat: () -> Void
+    let onExport: () -> Void
+}
+
+class DebugCommandHandler: CommandHandler {
+    let command = "/debug"
+    let label = "debug"
+    let hint = "Analyze and troubleshoot code"
+    let characterName = "Bruce"
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "/debug" || trimmed == "debug" else { return false }
+        context.onShowToast("🔍 Debug mode: input your code or error")
+        context.onAppend("DEBUG: Ready to analyze. Paste your code or describe the issue.\n")
+        return true
+    }
+}
+
+class RefactorCommandHandler: CommandHandler {
+    let command = "/refactor"
+    let label = "refactor"
+    let hint = "Improve code structure"
+    let characterName = "Bruce"
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "/refactor" || trimmed == "refactor" else { return false }
+        context.onShowToast("♻️ Refactor mode: paste your code")
+        context.onAppend("REFACTOR: Share the code you'd like to improve. I'll suggest cleaner patterns.\n")
+        return true
+    }
+}
+
+class ExploreCommandHandler: CommandHandler {
+    let command = "/explore"
+    let label = "explore"
+    let hint = "Explore ideas and possibilities"
+    let characterName = "Jazz"
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "/explore" || trimmed == "explore" else { return false }
+        context.onShowToast("🌌 Let's explore together")
+        context.onAppend("EXPLORE: What's on your mind? We can dig into possibilities, ask questions, and discover something unexpected.\n")
+        return true
+    }
+}
+
+class ReflectCommandHandler: CommandHandler {
+    let command = "/reflect"
+    let label = "reflect"
+    let hint = "Think deeper about the topic"
+    let characterName = "Jazz"
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "/reflect" || trimmed == "reflect" else { return false }
+        context.onShowToast("🪞 Reflection mode")
+        context.onAppend("REFLECT: What would you like to think through? I'll help you examine it from different angles.\n")
+        return true
+    }
+}
+
+class BrainstormCommandHandler: CommandHandler {
+    let command = "/brainstorm"
+    let label = "brainstorm"
+    let hint = "Generate creative ideas"
+    let characterName = "Jazz"
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "/brainstorm" || trimmed == "brainstorm" else { return false }
+        context.onShowToast("💡 Brainstorm mode: wild ideas welcome")
+        context.onAppend("BRAINSTORM: What challenge or opportunity are we brainstorming? No bad ideas—let's generate freely.\n")
+        return true
+    }
+}
+
+class CommandRegistry {
+    private var handlers: [CommandHandler] = []
+    
+    static let shared = CommandRegistry()
+    
+    private init() {
+        registerBuiltInCommands()
+        loadUserCommands()
+    }
+    
+    private func registerBuiltInCommands() {
+        handlers.append(DebugCommandHandler())
+        handlers.append(RefactorCommandHandler())
+        handlers.append(ExploreCommandHandler())
+        handlers.append(ReflectCommandHandler())
+        handlers.append(BrainstormCommandHandler())
+    }
+    
+    private func loadUserCommands() {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let commandsURL = appSupportURL.appendingPathComponent("lil-agents-commands.json")
+        
+        guard FileManager.default.fileExists(atPath: commandsURL.path) else { return }
+        guard let data = try? Data(contentsOf: commandsURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        
+        for cmdDict in json {
+            let character = (cmdDict["character"] as? String) ?? "Bruce"
+            if let cmd = cmdDict["command"] as? String,
+               let label = cmdDict["label"] as? String,
+               let hint = cmdDict["hint"] as? String,
+               let response = cmdDict["response"] as? String {
+                handlers.append(UserCommandHandler(command: cmd, label: label, hint: hint, characterName: character, response: response))
+            }
+        }
+    }
+    
+    func handleCommand(_ message: String, characterName: String, context: CommandContext) -> Bool {
+        let relevantHandlers = handlers.filter { handler in
+            handler.characterName.lowercased() == characterName.lowercased()
+        }
+        
+        for handler in relevantHandlers {
+            if handler.execute(context: context) {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    func commandsForCharacter(_ characterName: String) -> [CommandHandler] {
+        return handlers.filter { $0.characterName.lowercased() == characterName.lowercased() }
+    }
+}
+
+class UserCommandHandler: CommandHandler {
+    let command: String
+    let label: String
+    let hint: String
+    let characterName: String
+    let responseTemplate: String
+    
+    init(command: String, label: String, hint: String, characterName: String, response: String) {
+        self.command = command
+        self.label = label
+        self.hint = hint
+        self.characterName = characterName
+        self.responseTemplate = response
+    }
+    
+    func execute(context: CommandContext) -> Bool {
+        let trimmed = context.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cmdLower = command.lowercased()
+        guard trimmed == cmdLower || trimmed == cmdLower.dropFirst() else { return false }
+        
+        context.onShowToast("📌 Custom: \(label)")
+        context.onAppend("\(responseTemplate)\n")
+        return true
+    }
+}
+
 // MARK: - Command Palette (B1)
 
 fileprivate struct CommandPaletteItem: Equatable {
@@ -8,32 +184,22 @@ fileprivate struct CommandPaletteItem: Equatable {
     let hint: String
 }
 
-// Character-specific commands
-private let bruceCommands: [CommandPaletteItem] = [
-    CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"),
-    CommandPaletteItem(label: "debug", command: "/debug", hint: "Analyze and troubleshoot code"),
-    CommandPaletteItem(label: "refactor", command: "/refactor", hint: "Improve code structure"),
-    CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"),
-    CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"),
-]
-
-private let jazzCommands: [CommandPaletteItem] = [
-    CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"),
-    CommandPaletteItem(label: "explore", command: "/explore", hint: "Explore ideas and possibilities"),
-    CommandPaletteItem(label: "reflect", command: "/reflect", hint: "Think deeper about the topic"),
-    CommandPaletteItem(label: "brainstorm", command: "/brainstorm", hint: "Generate creative ideas"),
-    CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"),
-    CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"),
-]
-
-// Select commands based on current character
+// Select commands based on current character — now loads from CommandRegistry
 private func getCommandPaletteCommands() -> [CommandPaletteItem] {
-    let characterName = AgentProvider.current.displayName.lowercased()
-    if characterName.contains("bruce") {
-        return bruceCommands
-    } else {
-        return jazzCommands
+    let characterName = AgentProvider.current.displayName
+    let handlers = CommandRegistry.shared.commandsForCharacter(characterName)
+    
+    var items = handlers.map { handler in
+        CommandPaletteItem(label: handler.label, command: handler.command, hint: handler.hint)
     }
+    
+    // Add system commands (wake, clear, export, handoff)
+    items.append(CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"))
+    items.append(CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"))
+    items.append(CommandPaletteItem(label: "handoff", command: "/handoff", hint: "Generate handoff summary"))
+    items.append(CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"))
+    
+    return items
 }
 
 

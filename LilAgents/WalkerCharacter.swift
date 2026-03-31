@@ -747,8 +747,32 @@ class WalkerCharacter {
             return true
         }
 
-        // B2: /export command
+        // Try character-specific command handlers first
         let trimmedCheck = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmedCheck.hasPrefix("/") {
+            let context = CommandContext(
+                message: message,
+                characterName: characterName,
+                onAppend: { [weak self] text in
+                    self?.terminalView?.appendStreamingText(text)
+                },
+                onShowToast: { [weak self] toast in
+                    self?.terminalView?.showToast(toast)
+                },
+                onRefreshChat: { [weak self] in
+                    self?.refreshChat()
+                },
+                onExport: { [weak self] in
+                    self?.exportConversation()
+                }
+            )
+            
+            if CommandRegistry.shared.handleCommand(message, characterName: characterName, context: context) {
+                return true
+            }
+        }
+
+        // B2: /export command
         if trimmedCheck == "/export" || trimmedCheck == "export" {
             exportConversation()
             return true
