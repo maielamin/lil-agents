@@ -740,6 +740,58 @@ class WalkerCharacter {
         }
     }
 
+    private func handleCommandManagement(_ rawMessage: String, trimmedLower: String) -> Bool {
+        if trimmedLower == "/commands" {
+            let summary = CommandRegistry.shared.userCommandsSummary(for: characterName)
+            let help = "\n\(summary)\n\nCreate: /command add /name | hint | response | optional system prompt\nRemove: /command remove /name\n"
+            terminalView?.appendStreamingText(help)
+            terminalView?.endStreaming()
+            terminalView?.showToast("Command studio")
+            return true
+        }
+
+        if trimmedLower.hasPrefix("/command add ") {
+            let prefix = "/command add "
+            let payload = String(rawMessage.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = payload.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+            guard parts.count >= 3 else {
+                terminalView?.showToast("Usage: /command add /name | hint | response | optional system prompt")
+                return true
+            }
+
+            let modePrompt = parts.count > 3 ? parts[3] : nil
+            let result = CommandRegistry.shared.addOrUpdateUserCommand(
+                characterName: characterName,
+                command: parts[0],
+                hint: parts[1],
+                response: parts[2],
+                modeInstruction: modePrompt
+            )
+            let isError = result.hasPrefix("Failed")
+            terminalView?.appendToolResult(summary: result, isError: isError)
+            terminalView?.showToast(isError ? "Could not save command" : "Custom command saved")
+            return true
+        }
+
+        if trimmedLower.hasPrefix("/command remove ") {
+            let prefix = "/command remove "
+            let commandName = String(rawMessage.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !commandName.isEmpty else {
+                terminalView?.showToast("Usage: /command remove /name")
+                return true
+            }
+            let result = CommandRegistry.shared.removeUserCommand(characterName: characterName, command: commandName)
+            let isError = result.hasPrefix("Failed")
+            terminalView?.appendToolResult(summary: result, isError: isError)
+            terminalView?.showToast(isError ? "Could not remove command" : "Custom command removed")
+            return true
+        }
+
+        return false
+    }
+
     private func handlePotentialHandoffResponse(_ message: String) -> Bool {
         if isAgentSleeping {
             let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -776,8 +828,13 @@ class WalkerCharacter {
         }
 
         // Try character-specific command handlers first
-        let trimmedCheck = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmedOriginal = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCheck = trimmedOriginal.lowercased()
         if trimmedCheck.hasPrefix("/") {
+            if handleCommandManagement(trimmedOriginal, trimmedLower: trimmedCheck) {
+                return true
+            }
+
             // /mode off — exit active mode without clearing the chat
             if trimmedCheck == "/mode off" {
                 if let prevMode = activeCommandMode {

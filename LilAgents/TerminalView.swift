@@ -148,14 +148,48 @@ class CommandRegistry {
         handlers.append(ReflectCommandHandler())
         handlers.append(BrainstormCommandHandler())
     }
+
+    private var commandsURL: URL? {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return appSupportURL.appendingPathComponent("lil-agents-commands.json")
+    }
+
+    private func parseUserCommandJSON(_ data: Data) -> [[String: Any]]? {
+        try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    }
+
+    private func readUserCommandDictionaries() -> [[String: Any]] {
+        guard let url = commandsURL,
+              FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              let json = parseUserCommandJSON(data) else {
+            return []
+        }
+        return json
+    }
+
+    private func writeUserCommandDictionaries(_ json: [[String: Any]]) -> Bool {
+        guard let url = commandsURL else { return false }
+        let dir = url.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func resetUserHandlersFromDisk() {
+        handlers.removeAll { $0 is UserCommandHandler }
+        loadUserCommands()
+    }
     
     private func loadUserCommands() {
-        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let commandsURL = appSupportURL.appendingPathComponent("lil-agents-commands.json")
-        
-        guard FileManager.default.fileExists(atPath: commandsURL.path) else { return }
-        guard let data = try? Data(contentsOf: commandsURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        let json = readUserCommandDictionaries()
         
         for cmdDict in json {
             let character = (cmdDict["character"] as? String) ?? "Bruce"
@@ -186,6 +220,87 @@ class CommandRegistry {
     func commandsForCharacter(_ characterName: String) -> [CommandHandler] {
         return handlers.filter { $0.characterName.lowercased() == characterName.lowercased() }
     }
+
+    func userCommandsSummary(for characterName: String) -> String {
+        let custom = commandsForCharacter(characterName).compactMap { $0 as? UserCommandHandler }
+        if custom.isEmpty {
+            return "No custom commands for \(characterName)."
+        }
+
+        let rows = custom.map { handler in
+            "- \(handler.command) — \(handler.hint)"
+        }.joined(separator: "\n")
+        return "Custom commands for \(characterName):\n\(rows)"
+    }
+
+    func addOrUpdateUserCommand(
+        characterName: String,
+        command rawCommand: String,
+        hint: String,
+        response: String,
+        modeInstruction: String?
+    ) -> String {
+        let normalizedCommand = rawCommand.hasPrefix("/") ? rawCommand : "/\(rawCommand)"
+        let normalizedLabel = String(normalizedCommand.dropFirst())
+
+        guard !normalizedLabel.isEmpty, !hint.isEmpty, !response.isEmpty else {
+            return "Failed: command, hint, and response are required."
+        }
+
+        var json = readUserCommandDictionaries()
+        let index = json.firstIndex { dict in
+            let c = (dict["character"] as? String ?? "").lowercased()
+            let cmd = (dict["command"] as? String ?? "").lowercased()
+            return c == characterName.lowercased() && cmd == normalizedCommand.lowercased()
+        }
+
+        var record: [String: Any] = [
+            "character": characterName,
+            "command": normalizedCommand,
+            "label": normalizedLabel,
+            "hint": hint,
+            "response": response
+        ]
+        if let modeInstruction, !modeInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            record["systemPrompt"] = modeInstruction
+        }
+
+        if let i = index {
+            json[i] = record
+        } else {
+            json.append(record)
+        }
+
+        guard writeUserCommandDictionaries(json) else {
+            return "Failed: couldn't write command file."
+        }
+
+        resetUserHandlersFromDisk()
+        let action = index == nil ? "Added" : "Updated"
+        return "\(action) \(normalizedCommand) for \(characterName)."
+    }
+
+    func removeUserCommand(characterName: String, command rawCommand: String) -> String {
+        let normalizedCommand = rawCommand.hasPrefix("/") ? rawCommand : "/\(rawCommand)"
+        var json = readUserCommandDictionaries()
+        let before = json.count
+        json.removeAll { dict in
+            let c = (dict["character"] as? String ?? "").lowercased()
+            let cmd = (dict["command"] as? String ?? "").lowercased()
+            return c == characterName.lowercased() && cmd == normalizedCommand.lowercased()
+        }
+
+        guard json.count != before else {
+            return "No custom command named \(normalizedCommand) for \(characterName)."
+        }
+
+        guard writeUserCommandDictionaries(json) else {
+            return "Failed: couldn't write command file."
+        }
+
+        resetUserHandlersFromDisk()
+        return "Removed \(normalizedCommand) for \(characterName)."
+    }
 }
 
 class UserCommandHandler: CommandHandler {
@@ -210,6 +325,10 @@ class UserCommandHandler: CommandHandler {
         let cmdLower = command.lowercased()
         guard trimmed == cmdLower || trimmed == String(cmdLower.dropFirst()) else { return false }
         
+        let response = responseTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !response.isEmpty {
+            context.onAppend("\n\(response)\n")
+        }
         if let instruction = modeInstruction {
             context.onActivateMode(label, instruction)
         }
@@ -248,6 +367,9 @@ private func getCommandPaletteCommands(activeMode: String? = nil) -> [CommandPal
     items.append(CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"))
     items.append(CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"))
     items.append(CommandPaletteItem(label: "handoff", command: "/handoff", hint: "Generate handoff summary"))
+    items.append(CommandPaletteItem(label: "commands", command: "/commands", hint: "List and manage custom commands"))
+    items.append(CommandPaletteItem(label: "command add", command: "/command add /name | hint | response", hint: "Create or update a custom command"))
+    items.append(CommandPaletteItem(label: "command remove", command: "/command remove /name", hint: "Delete a custom command"))
     items.append(CommandPaletteItem(label: "export", command: "/export", hint: "Export conversation to Markdown"))
     
     return items
