@@ -258,6 +258,8 @@ final class ConversationOrchestrator {
     private let defaults = UserDefaults.standard
     private let softThreshold = 12000
     private let hardThreshold = 22000
+    private var pendingUserChars: Int?
+    private var hasCommittedPendingUserTurn = false
 
     private(set) var usage: UsageState
 
@@ -268,13 +270,31 @@ final class ConversationOrchestrator {
 
     func resetSession() {
         usage = UsageState()
+        pendingUserChars = nil
+        hasCommittedPendingUserTurn = false
         save()
     }
 
-    func recordUserMessage(_ message: String) {
-        usage.turnCount += 1
-        usage.totalUserChars += message.count
+    func stageUserMessage(_ message: String) {
+        pendingUserChars = message.count
+        hasCommittedPendingUserTurn = false
         usage.lastTurnAt = Date()
+        save()
+    }
+
+    func commitPendingUserMessageIfNeeded() {
+        guard !hasCommittedPendingUserTurn, let pendingUserChars else { return }
+        usage.turnCount += 1
+        usage.totalUserChars += pendingUserChars
+        usage.lastTurnAt = Date()
+        hasCommittedPendingUserTurn = true
+        self.pendingUserChars = nil
+        save()
+    }
+
+    func discardPendingUserMessage() {
+        pendingUserChars = nil
+        hasCommittedPendingUserTurn = false
         save()
     }
 

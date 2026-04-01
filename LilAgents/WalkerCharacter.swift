@@ -78,6 +78,7 @@ class WalkerCharacter {
     private var environmentHiddenAt: CFTimeInterval?
     private var wasPopoverVisibleBeforeEnvironmentHide = false
     private var wasBubbleVisibleBeforeEnvironmentHide = false
+    private var lastAssistantOutput = ""
 
     init(videoName: String) {
         self.videoName = videoName
@@ -373,6 +374,7 @@ class WalkerCharacter {
         isAgentSleeping = false
         sleepReason = nil
         isPendingClearConfirmation = false
+        lastAssistantOutput = ""
         terminalView?.inputField.placeholderString = characterInputPlaceholder
     }
 
@@ -556,13 +558,16 @@ class WalkerCharacter {
 
     private func wireSession(_ session: any AgentSession, providerName: String = AgentProvider.current.displayName) {
         session.onText = { [weak self] text in
+            self?.orchestrator?.commitPendingUserMessageIfNeeded()
             self?.orchestrator?.recordAssistantChunk(text)
             self?.maybeShowBudgetNotice()
             self?.currentStreamingText += text
+            self?.lastAssistantOutput += text
             self?.terminalView?.appendStreamingText(text)
         }
 
         session.onTurnComplete = { [weak self] in
+            self?.orchestrator?.commitPendingUserMessageIfNeeded()
             self?.orchestrator?.recordTurnComplete()
             // C1: Flush accumulated streaming text as a single assistant turn
             if let text = self?.currentStreamingText, !text.isEmpty {
@@ -577,6 +582,7 @@ class WalkerCharacter {
 
         session.onError = { [weak self] text in
             let isLimitSignal = AgentProvider.isLikelyLimitMessage(text)
+            self?.orchestrator?.discardPendingUserMessage()
             self?.orchestrator?.recordError(isLimitSignal: isLimitSignal)
             self?.terminalView?.appendError(text)
             if isLimitSignal {
@@ -615,8 +621,7 @@ class WalkerCharacter {
             orchestrator = ConversationOrchestrator(provider: AgentProvider.current)
         }
 
-        orchestrator?.recordUserMessage(message)
-        maybeShowBudgetNotice()
+        orchestrator?.stageUserMessage(message)
 
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
@@ -900,6 +905,16 @@ class WalkerCharacter {
             return true
         }
 
+        // B1: /copilot command — send last response to VS Code Copilot chat
+        if trimmedCheck == "/copilot" || trimmedCheck == "copilot" {
+            guard !lastAssistantOutput.isEmpty else {
+                terminalView?.showToast("No agent response to send yet")
+                return true
+            }
+            sendToCopilotChat(lastAssistantOutput)
+            return true
+        }
+
         // B1: /handoff command (from palette)
         if trimmedCheck == "/handoff" {
             showLimitPrompt(reason: "manual handoff requested")
@@ -930,6 +945,47 @@ class WalkerCharacter {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+        
+        // Security: Auto-clear clipboard after 60 seconds to prevent sensitive data leakage
+        // If user has copied something else in the meantime, don't clear (respect user action)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
+            if pb.string(forType: .string) == text {
+                pb.clearContents()
+            }
+        }
+    }
+
+    private func sendToCopilotChat(_ text: String) {
+        // Copy to clipboard (clipboard contents are handled via Cmd+V by AppleScript)
+        copyToClipboard(text)
+        
+        // Use hardcoded AppleScript to open Copilot chat and paste content
+        // Note: Never interpolate user input into AppleScript strings
+        let script = """
+        tell application "Visual Studio Code"
+            activate
+            delay 0.3
+            tell application "System Events"
+                keystroke "l" using {command down, shift down}
+                delay 0.2
+                keystroke "v" using {command down}
+                delay 0.1
+                key code 36
+            end tell
+        end tell
+        """
+        
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            terminalView?.showToast("Sent to Copilot chat")
+        } catch {
+            terminalView?.showToast("Could not send to Copilot. Make sure VS Code is running.")
+        }
     }
 
     private func generateHandoffSummary() -> String {
@@ -1031,11 +1087,24 @@ class WalkerCharacter {
 
         let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         if let url = docsURL?.appendingPathComponent(fileName) {
-            try? markdown.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                // Write file atomically
+                try markdown.write(to: url, atomically: true, encoding: .utf8)
+                
+                // Set POSIX file permissions to 0600 (owner read-write only)
+                // This prevents other users on the system from reading sensitive conversation data
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o600)],
+                    ofItemAtPath: url.path
+                )
+            } catch {
+                terminalView?.showToast("Failed to export conversation.")
+                return
+            }
         }
         copyToClipboard(markdown)
-        terminalView?.appendToolResult(summary: "Conversation exported to ~/Documents/\(fileName) and copied to clipboard.", isError: false)
-        terminalView?.showToast("Exported to ~/Documents/\(fileName)")
+        terminalView?.appendToolResult(summary: "Conversation exported (file: private, readable by owner only) to ~/Documents/\(fileName) and copied to clipboard.", isError: false)
+        terminalView?.showToast("Exported to ~/Documents/\(fileName) (private)")
     }
 
     private func formatToolInput(_ input: [String: Any]) -> String {

@@ -5,6 +5,7 @@ class ShellEnvironment {
 
     /// Capture the user's login shell environment (zsh -l -i).
     /// Results are cached after the first successful call.
+    /// SECURITY: Times out after 5 seconds to prevent hanging if shell config is problematic
     static func resolve(completion: @escaping ([String: String]?) -> Void) {
         if let cached = cachedEnvironment {
             completion(cached)
@@ -17,7 +18,18 @@ class ShellEnvironment {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()
+        
+        // Security: Timeout after 5 seconds to prevent hanging
+        var timeoutTimer: Timer? = nil
+        var hasCompleted = false
+        
         proc.terminationHandler = { _ in
+            // Prevent duplicate completion calls
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            timeoutTimer?.invalidate()
+            timeoutTimer = nil
+            
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             DispatchQueue.main.async {
@@ -39,7 +51,27 @@ class ShellEnvironment {
                 }
             }
         }
-        do { try proc.run() } catch { completion(nil) }
+        
+        // Setup timeout timer
+        timeoutTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { _ in
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            print("⚠️ Shell environment capture timed out after 5 seconds")
+            proc.terminate()
+            DispatchQueue.main.async {
+                completion(nil)
+            }
+        }
+        
+        do { 
+            try proc.run() 
+        } catch { 
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            timeoutTimer?.invalidate()
+            timeoutTimer = nil
+            completion(nil) 
+        }
     }
 
     /// Find a binary by name using the shell PATH + fallback locations.

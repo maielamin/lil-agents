@@ -28,7 +28,37 @@ class ClaudeSession: AgentSession {
     private static let emailKeywords = ["email", "gmail", "send mail", "send an email", "write an email"]
     private static let mcpConfigPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".lil-agents-mcp.json").path
-    private var mcpConfigExists: Bool { FileManager.default.fileExists(atPath: Self.mcpConfigPath) }
+    
+    /// Validates MCP config exists and has safe permissions (not world-readable)
+    private var mcpConfigExists: Bool {
+        let path = Self.mcpConfigPath
+        
+        // Check file exists
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        
+        // Validate JSON structure (basic validation)
+        if let data = FileManager.default.contents(atPath: path),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            // Must be a dictionary with valid MCP config structure
+            guard json is [String: Any] else { return false }
+            
+            // SECURITY: Check file permissions (warn if too permissive)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            if let perms = attrs?[.posixPermissions] as? NSNumber {
+                let mode = perms.uintValue
+                // Warn if group/other have any access
+                if (mode & 0o077) != 0 {
+                    print("⚠️ SECURITY WARNING: ~/.lil-agents-mcp.json has overly permissive permissions (mode: 0o\\(String(mode, radix: 8)))")
+                    print("   Recommended: chmod 600 ~/.lil-agents-mcp.json")
+                    return false  // Don't use config with bad permissions
+                }
+            }
+            
+            return true
+        }
+        
+        return false
+    }
 
     var onText: ((String) -> Void)?
     var onError: ((String) -> Void)?

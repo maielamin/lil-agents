@@ -366,6 +366,7 @@ private func getCommandPaletteCommands(activeMode: String? = nil) -> [CommandPal
     // Add system commands (wake, clear, export, handoff)
     items.append(CommandPaletteItem(label: "wake", command: "/wake", hint: "Resume agent after sleep"))
     items.append(CommandPaletteItem(label: "clear", command: "/clear", hint: "Start a new chat"))
+    items.append(CommandPaletteItem(label: "copilot", command: "/copilot", hint: "Send to VS Code Copilot chat"))
     items.append(CommandPaletteItem(label: "handoff", command: "/handoff", hint: "Generate handoff summary"))
     items.append(CommandPaletteItem(label: "commands", command: "/commands", hint: "List and manage custom commands"))
     items.append(CommandPaletteItem(label: "command add", command: "/command add /name | hint | response", hint: "Create or update a custom command"))
