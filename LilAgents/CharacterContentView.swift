@@ -125,6 +125,23 @@ class CharacterContentView: NSView {
         finishManualDragIfNeeded()
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        isMouseDown = false
+        longPressWorkItem?.cancel()
+        longPressWorkItem = nil
+        removeMouseUpMonitors()
+        isDraggingCharacter = false
+        longPressReached = false
+        isLifted = false
+
+        guard let menu = character?.makeContextMenu() else { return }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        character?.makeContextMenu()
+    }
+
     private func finishManualDragIfNeeded() {
         isMouseDown = false
         longPressWorkItem?.cancel()

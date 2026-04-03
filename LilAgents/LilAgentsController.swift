@@ -4,9 +4,7 @@ class LilAgentsController {
     var characters: [WalkerCharacter] = []
     private var displayLink: CVDisplayLink?
     var debugWindow: NSWindow?
-    var pinnedScreenIndex: Int = -1
     private static let onboardingKey = "hasCompletedOnboarding"
-    private var isHiddenForEnvironment = false
 
     func start() {
         let char1 = WalkerCharacter(videoName: "walk-bruce-01")
@@ -38,11 +36,9 @@ class LilAgentsController {
         char1.pauseEndTime = CACurrentMediaTime() + Double.random(in: 0.5...2.0)
         char2.pauseEndTime = CACurrentMediaTime() + Double.random(in: 8.0...14.0)
 
-        char1.setup()
-        char2.setup()
-
         characters = [char1, char2]
         characters.forEach { $0.controller = self }
+        characters.forEach { $0.setup() }
 
         setupDebugLine()
         startDisplayLink()
@@ -154,78 +150,126 @@ class LilAgentsController {
         CVDisplayLinkStart(displayLink)
     }
 
-    var activeScreen: NSScreen? {
-        if pinnedScreenIndex >= 0, pinnedScreenIndex < NSScreen.screens.count {
-            return NSScreen.screens[pinnedScreenIndex]
+    func dockGeometry(for screen: NSScreen) -> (dockX: CGFloat, dockWidth: CGFloat, dockTopY: CGFloat) {
+        let (localDockX, dockWidth) = getDockIconArea(screenWidth: screen.frame.width)
+        return (screen.frame.minX + localDockX, dockWidth, screen.visibleFrame.origin.y)
+    }
+
+    func screenIndex(for character: WalkerCharacter) -> Int {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return -1 }
+
+        let preferredIndex = character.preferredScreenIndex
+        if preferredIndex >= 0, preferredIndex < screens.count {
+            return preferredIndex
         }
-        return NSScreen.main
+
+        if let mainScreen = NSScreen.main,
+           let mainIndex = screens.firstIndex(where: { $0 === mainScreen }),
+           let characterIndex = characters.firstIndex(where: { $0 === character }) {
+            if characterIndex == 0 {
+                return mainIndex
+            }
+
+            var remainingIndices = Array(screens.indices)
+            remainingIndices.removeAll { $0 == mainIndex }
+            if !remainingIndices.isEmpty {
+                return remainingIndices[min(characterIndex - 1, remainingIndices.count - 1)]
+            }
+
+            return mainIndex
+        }
+
+        if let characterIndex = characters.firstIndex(where: { $0 === character }) {
+            return min(characterIndex, screens.count - 1)
+        }
+
+        return 0
+    }
+
+    func screen(for character: WalkerCharacter) -> NSScreen? {
+        let screens = NSScreen.screens
+        let index = screenIndex(for: character)
+        guard index >= 0, index < screens.count else { return NSScreen.main ?? screens.first }
+        return screens[index]
     }
 
     /// The dock lives on the screen where visibleFrame.origin.y > frame.origin.y (bottom dock)
     /// On screens without the dock, visibleFrame.origin.y == frame.origin.y
     private func screenHasDock(_ screen: NSScreen) -> Bool {
-        return screen.visibleFrame.origin.y > screen.frame.origin.y
+        screen.visibleFrame.origin.y > screen.frame.origin.y
     }
 
-    private func shouldShowCharacters(on screen: NSScreen) -> Bool {
+    private func shouldShowCharacter(on screen: NSScreen) -> Bool {
         if screenHasDock(screen) {
             return true
         }
 
-        // With dock auto-hide enabled on the active desktop, the dock can still be
-        // present even though visibleFrame starts at the screen origin. In fullscreen
-        // spaces, both the dock and menu bar are absent, so visibleFrame matches frame.
+        // Allow agents to stay on secondary displays even when the Dock isn't currently
+        // visible there, so each monitor can keep its own agent/session.
+        if NSScreen.screens.count > 1 {
+            return true
+        }
+
         let menuBarVisible = screen.visibleFrame.maxY < screen.frame.maxY
         return dockAutohideEnabled() && screen == NSScreen.main && menuBarVisible
     }
 
     @discardableResult
-    private func updateEnvironmentVisibility(for screen: NSScreen) -> Bool {
-        let shouldShow = shouldShowCharacters(on: screen)
-        guard shouldShow != !isHiddenForEnvironment else { return shouldShow }
-
-        isHiddenForEnvironment = !shouldShow
+    private func updateEnvironmentVisibility(for character: WalkerCharacter, on screen: NSScreen) -> Bool {
+        let shouldShow = shouldShowCharacter(on: screen)
 
         if shouldShow {
-            characters.forEach { $0.showForEnvironmentIfNeeded() }
+            character.showForEnvironmentIfNeeded()
         } else {
             debugWindow?.orderOut(nil)
-            characters.forEach { $0.hideForEnvironment() }
+            character.hideForEnvironment()
         }
 
         return shouldShow
     }
 
     func tick() {
-        guard let screen = activeScreen else { return }
-        guard updateEnvironmentVisibility(for: screen) else { return }
+        let candidateChars = characters.filter { $0.isManuallyVisible }
+        var visibleChars: [(character: WalkerCharacter, screen: NSScreen)] = []
 
-        let screenWidth = screen.frame.width
-        let dockX: CGFloat
-        let dockWidth: CGFloat
-        let dockTopY: CGFloat
-
-        // Dock is on this screen — constrain to dock area
-        (dockX, dockWidth) = getDockIconArea(screenWidth: screenWidth)
-        dockTopY = screen.visibleFrame.origin.y
-
-        updateDebugLine(dockX: dockX, dockWidth: dockWidth, dockTopY: dockTopY)
-
-        let activeChars = characters.filter { $0.window.isVisible && $0.isManuallyVisible }
+        for char in candidateChars {
+            guard let screen = screen(for: char) else { continue }
+            guard updateEnvironmentVisibility(for: char, on: screen) else { continue }
+            visibleChars.append((character: char, screen: screen))
+        }
 
         let now = CACurrentMediaTime()
-        let anyWalking = activeChars.contains { $0.isWalking }
-        for char in activeChars {
+        let anyWalking = visibleChars.contains { $0.character.isWalking }
+        for entry in visibleChars {
+            let char = entry.character
             if char.isIdleForPopover { continue }
             if char.isPaused && now >= char.pauseEndTime && anyWalking {
                 char.pauseEndTime = now + Double.random(in: 5.0...10.0)
             }
         }
-        for char in activeChars {
-            char.update(dockX: dockX, dockWidth: dockWidth, dockTopY: dockTopY)
+
+        for (index, entry) in visibleChars.enumerated() {
+            let geometry = dockGeometry(for: entry.screen)
+            if index == 0 {
+                updateDebugLine(dockX: geometry.dockX, dockWidth: geometry.dockWidth, dockTopY: geometry.dockTopY)
+            }
+            entry.character.update(dockX: geometry.dockX, dockWidth: geometry.dockWidth, dockTopY: geometry.dockTopY)
         }
 
-        let sorted = activeChars.sorted { $0.positionProgress < $1.positionProgress }
+        if visibleChars.isEmpty {
+            debugWindow?.orderOut(nil)
+        }
+
+        let sorted = visibleChars.map { $0.character }.sorted { lhs, rhs in
+            let lhsScreenIndex = screenIndex(for: lhs)
+            let rhsScreenIndex = screenIndex(for: rhs)
+            if lhsScreenIndex != rhsScreenIndex {
+                return lhsScreenIndex < rhsScreenIndex
+            }
+            return lhs.positionProgress < rhs.positionProgress
+        }
+
         for (i, char) in sorted.enumerated() {
             char.window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + i)
         }

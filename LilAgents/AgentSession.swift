@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Provider
 
 enum AgentProvider: String, CaseIterable {
-    case claude, codex, copilot
+    case claude, codex, copilot, gemini
 
     private static let defaultsKey = "selectedProvider"
     private static let smartReminderPrefix = "smartReminderEnabled."
@@ -29,6 +29,7 @@ enum AgentProvider: String, CaseIterable {
         case .claude:  return "Claude"
         case .codex:   return "Codex"
         case .copilot: return "Copilot"
+        case .gemini:  return "Gemini"
         }
     }
 
@@ -53,6 +54,8 @@ enum AgentProvider: String, CaseIterable {
             return "To install, run this in Terminal:\n  npm install -g @openai/codex"
         case .copilot:
             return "To install, run this in Terminal:\n  brew install copilot-cli\n\nOr: npm install -g @github/copilot-cli"
+        case .gemini:
+            return "To install, run this in Terminal:\n  npm install -g @google/gemini-cli\n\nThen authenticate:\n  gemini auth"
         }
     }
 
@@ -61,6 +64,7 @@ enum AgentProvider: String, CaseIterable {
         case .claude:  return ClaudeSession()
         case .codex:   return CodexSession()
         case .copilot: return CopilotSession()
+        case .gemini:  return GeminiSession()
         }
     }
 
@@ -69,6 +73,7 @@ enum AgentProvider: String, CaseIterable {
         case .claude:  return 12
         case .codex:   return 20
         case .copilot: return 20
+        case .gemini:  return 20
         }
     }
 

@@ -14,6 +14,8 @@ struct LilAgentsApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: LilAgentsController?
     var statusItem: NSStatusItem?
+    var displayMenu: NSMenu?
+    var sizeMenu: NSMenu?
     let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -97,22 +99,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         themeItem.submenu = themeMenu
         menu.addItem(themeItem)
 
+        let sizeItem = NSMenuItem(title: "Agent Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        sizeMenu.delegate = self
+        self.sizeMenu = sizeMenu
+        rebuildSizeMenu()
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
+
         // Display submenu
-        let displayItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
+        let displayItem = NSMenuItem(title: "Displays", action: nil, keyEquivalent: "")
         let displayMenu = NSMenu()
         displayMenu.delegate = self
-        let autoItem = NSMenuItem(title: "Auto (Main Display)", action: #selector(switchDisplay(_:)), keyEquivalent: "")
-        autoItem.tag = -1
-        autoItem.state = .on
-        displayMenu.addItem(autoItem)
-        displayMenu.addItem(NSMenuItem.separator())
-        for (i, screen) in NSScreen.screens.enumerated() {
-            let name = screen.localizedName
-            let item = NSMenuItem(title: name, action: #selector(switchDisplay(_:)), keyEquivalent: "")
-            item.tag = i
-            item.state = .off
-            displayMenu.addItem(item)
-        }
+        self.displayMenu = displayMenu
+        rebuildDisplayMenu()
         displayItem.submenu = displayMenu
         menu.addItem(displayItem)
 
@@ -128,6 +128,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
+    }
+
+    private func rebuildSizeMenu() {
+        guard let sizeMenu else { return }
+        sizeMenu.removeAllItems()
+
+        let currentPreset = WalkerCharacter.sizePreset
+        for preset in AgentSizePreset.allCases {
+            let item = NSMenuItem(title: preset.title, action: #selector(switchAgentSize(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = preset.rawValue
+            item.state = currentPreset == preset ? .on : .off
+            sizeMenu.addItem(item)
+        }
+    }
+
+    private func rebuildDisplayMenu() {
+        guard let displayMenu else { return }
+        displayMenu.removeAllItems()
+
+        guard let controller else { return }
+        let screens = NSScreen.screens
+
+        for (charIndex, char) in controller.characters.enumerated() {
+            let charItem = NSMenuItem(title: char.characterName, action: nil, keyEquivalent: "")
+            let charMenu = NSMenu(title: char.characterName)
+
+            let isAuto = char.preferredScreenIndex == -1
+            let autoItem = NSMenuItem(title: "Auto", action: #selector(switchCharacterDisplay(_:)), keyEquivalent: "")
+            autoItem.target = self
+            autoItem.tag = -1
+            autoItem.representedObject = charIndex
+            autoItem.state = isAuto ? .on : .off
+            charMenu.addItem(autoItem)
+            charMenu.addItem(NSMenuItem.separator())
+
+            let activeScreenIndex = controller.screenIndex(for: char)
+            for (screenIndex, screen) in screens.enumerated() {
+                let item = NSMenuItem(title: screen.localizedName, action: #selector(switchCharacterDisplay(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = screenIndex
+                item.representedObject = charIndex
+                item.state = (!isAuto && activeScreenIndex == screenIndex) ? .on : .off
+                charMenu.addItem(item)
+            }
+
+            charItem.submenu = charMenu
+            displayMenu.addItem(charItem)
+        }
+
+        if !controller.characters.isEmpty {
+            displayMenu.addItem(NSMenuItem.separator())
+        }
+
+        let spreadItem = NSMenuItem(title: "Auto Spread Across Displays", action: #selector(autoSpreadDisplays), keyEquivalent: "")
+        spreadItem.target = self
+        displayMenu.addItem(spreadItem)
     }
 
     // MARK: - Menu Actions
@@ -250,15 +307,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func switchDisplay(_ sender: NSMenuItem) {
-        let idx = sender.tag
-        controller?.pinnedScreenIndex = idx
+    @objc func switchCharacterDisplay(_ sender: NSMenuItem) {
+        guard let controller,
+              let charIndex = sender.representedObject as? Int,
+              charIndex >= 0,
+              charIndex < controller.characters.count else { return }
 
-        if let displayMenu = sender.menu {
-            for item in displayMenu.items {
-                item.state = item.tag == idx ? .on : .off
-            }
-        }
+        controller.characters[charIndex].preferredScreenIndex = sender.tag
+        rebuildDisplayMenu()
+    }
+
+    @objc func autoSpreadDisplays() {
+        controller?.characters.forEach { $0.preferredScreenIndex = -1 }
+        rebuildDisplayMenu()
+    }
+
+    @objc func switchAgentSize(_ sender: NSMenuItem) {
+        guard let preset = AgentSizePreset(rawValue: sender.tag) else { return }
+        WalkerCharacter.sizePreset = preset
+        rebuildSizeMenu()
+        controller?.characters.forEach { $0.applyCurrentSize() }
+        controller?.tick()
     }
 
     @objc func toggleChar1(_ sender: NSMenuItem) {
@@ -306,4 +375,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-extension AppDelegate: NSMenuDelegate {}
+extension AppDelegate: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu == displayMenu {
+            rebuildDisplayMenu()
+        }
+        if menu == sizeMenu {
+            rebuildSizeMenu()
+        }
+    }
+}

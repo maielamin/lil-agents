@@ -1,6 +1,28 @@
 import AVFoundation
 import AppKit
 
+enum AgentSizePreset: Int, CaseIterable {
+    case small = 0
+    case medium = 1
+    case large = 2
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .small: return 0.85
+        case .medium: return 1.0
+        case .large: return 1.2
+        }
+    }
+}
+
 class WalkerCharacter {
     let videoName: String
     var characterName: String = "Agent"
@@ -10,9 +32,23 @@ class WalkerCharacter {
     var queuePlayer: AVQueuePlayer!
     var looper: AVPlayerLooper!
 
+    private static let agentSizePresetKey = "agentSizePreset"
+
+    static var sizePreset: AgentSizePreset {
+        get {
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: agentSizePresetKey) != nil else { return .medium }
+            return AgentSizePreset(rawValue: defaults.integer(forKey: agentSizePresetKey)) ?? .medium
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: agentSizePresetKey)
+        }
+    }
+
     let videoWidth: CGFloat = 1080
     let videoHeight: CGFloat = 1920
-    let displayHeight: CGFloat = 200
+    let baseDisplayHeight: CGFloat = 200
+    var displayHeight: CGFloat { baseDisplayHeight * Self.sizePreset.scale }
     var displayWidth: CGFloat { displayHeight * (videoWidth / videoHeight) }
 
     // Walk timing (per-character, from frame analysis)
@@ -71,6 +107,19 @@ class WalkerCharacter {
     private var activeCommandMode: String? // e.g. "debug", "explore"
     private var activeCommandPrompt: String? // the actual system instruction
     weak var controller: LilAgentsController?
+    private var screenPreferenceKey: String {
+        "preferredScreenIndex.\(characterName.lowercased())"
+    }
+    var preferredScreenIndex: Int {
+        get {
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: screenPreferenceKey) != nil else { return -1 }
+            return defaults.integer(forKey: screenPreferenceKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: screenPreferenceKey)
+        }
+    }
     var themeOverride: PopoverTheme?
     var isAgentBusy: Bool { session?.isBusy ?? false }
     var thinkingBubbleWindow: NSWindow?
@@ -79,9 +128,26 @@ class WalkerCharacter {
     private var wasPopoverVisibleBeforeEnvironmentHide = false
     private var wasBubbleVisibleBeforeEnvironmentHide = false
     private var lastAssistantOutput = ""
+    private var isAttemptingGeminiFallback = false
+    private var hasAttemptedGeminiFallback = false
 
     init(videoName: String) {
         self.videoName = videoName
+    }
+
+    func applyCurrentSize() {
+        guard window != nil, playerLayer != nil else { return }
+
+        let oldFrame = window.frame
+        let newSize = NSSize(width: displayWidth, height: displayHeight)
+        let newOrigin = NSPoint(x: oldFrame.midX - newSize.width / 2, y: oldFrame.minY)
+
+        window.setFrame(NSRect(origin: newOrigin, size: newSize), display: true)
+        window.contentView?.frame = NSRect(origin: .zero, size: newSize)
+        playerLayer.frame = NSRect(origin: .zero, size: newSize)
+
+        updatePopoverPosition()
+        updateThinkingBubble()
     }
 
     // MARK: - Setup
@@ -101,12 +167,17 @@ class WalkerCharacter {
         playerLayer.backgroundColor = NSColor.clear.cgColor
         playerLayer.frame = CGRect(x: 0, y: 0, width: displayWidth, height: displayHeight)
 
-        let screen = NSScreen.main!
-        let dockTopY = screen.visibleFrame.origin.y
+        let screen = controller?.screen(for: self) ?? NSScreen.main!
+        let geometry = controller?.dockGeometry(for: screen)
+        let dockTopY = geometry?.dockTopY ?? screen.visibleFrame.origin.y
         let bottomPadding = displayHeight * 0.15
         let y = dockTopY - bottomPadding + yOffset
+        let initialDockX = geometry?.dockX ?? screen.frame.minX
+        let initialDockWidth = geometry?.dockWidth ?? screen.frame.width
+        let initialTravelDistance = max(initialDockWidth - displayWidth, 0)
+        let x = initialDockX + initialTravelDistance * positionProgress
 
-        let contentRect = CGRect(x: 0, y: y, width: displayWidth, height: displayHeight)
+        let contentRect = CGRect(x: x, y: y, width: displayWidth, height: displayHeight)
         window = NSWindow(
             contentRect: contentRect,
             styleMask: .borderless,
@@ -204,6 +275,85 @@ class WalkerCharacter {
         }
     }
 
+    func makeContextMenu() -> NSMenu {
+        let menu = NSMenu(title: characterName)
+
+        let chatTitle = isIdleForPopover ? "Close Chat" : "Open Chat"
+        let chatItem = NSMenuItem(title: chatTitle, action: #selector(toggleChatFromContextMenu), keyEquivalent: "")
+        chatItem.target = self
+        menu.addItem(chatItem)
+
+        let newChatItem = NSMenuItem(title: "New Chat", action: #selector(newChatFromContextMenu), keyEquivalent: "")
+        newChatItem.target = self
+        menu.addItem(newChatItem)
+
+        if isAgentSleeping {
+            let wakeItem = NSMenuItem(title: "Wake Agent", action: #selector(wakeFromContextMenu), keyEquivalent: "")
+            wakeItem.target = self
+            menu.addItem(wakeItem)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        let sizeItem = NSMenuItem(title: "Agent Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu(title: "Agent Size")
+        for preset in AgentSizePreset.allCases {
+            let item = NSMenuItem(title: preset.title, action: #selector(changeSizeFromContextMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = preset.rawValue
+            item.state = WalkerCharacter.sizePreset == preset ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
+
+        let hideItem = NSMenuItem(title: "Hide This Agent", action: #selector(hideFromContextMenu), keyEquivalent: "")
+        hideItem.target = self
+        menu.addItem(hideItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(title: "Quit lil agents", action: #selector(quitFromContextMenu), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    @objc private func toggleChatFromContextMenu() {
+        if isIdleForPopover {
+            closePopover()
+        } else {
+            openPopover()
+        }
+    }
+
+    @objc private func newChatFromContextMenu() {
+        if !isIdleForPopover {
+            openPopover()
+        }
+        refreshChat()
+    }
+
+    @objc private func wakeFromContextMenu() {
+        wakeFromSleep()
+    }
+
+    @objc private func changeSizeFromContextMenu(_ sender: NSMenuItem) {
+        guard let preset = AgentSizePreset(rawValue: sender.tag) else { return }
+        WalkerCharacter.sizePreset = preset
+        controller?.characters.forEach { $0.applyCurrentSize() }
+        controller?.tick()
+    }
+
+    @objc private func hideFromContextMenu() {
+        setManuallyVisible(false)
+    }
+
+    @objc private func quitFromContextMenu() {
+        NSApp.terminate(nil)
+    }
+
     private func openOnboardingPopover() {
         showingCompletion = false
         hideBubble()
@@ -261,13 +411,8 @@ class WalkerCharacter {
     }
 
     func openPopover() {
-        // Close any other open popover
-        if let siblings = controller?.characters {
-            for sibling in siblings where sibling !== self && sibling.isIdleForPopover {
-                sibling.closePopover()
-            }
-        }
-
+        // Let each agent keep its own popover/session so chats can stay open
+        // independently across monitors and desktops.
         isIdleForPopover = true
         isWalking = false
         isPaused = true
@@ -317,11 +462,13 @@ class WalkerCharacter {
         // Remove old monitors before adding new ones
         removeEventMonitors()
 
-        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self = self, let popover = self.popoverWindow else { return }
-            let popoverFrame = popover.frame
-            let charFrame = self.window.frame
-            if !popoverFrame.contains(NSEvent.mouseLocation) && !charFrame.contains(NSEvent.mouseLocation) {
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self = self,
+                  let popover = self.popoverWindow,
+                  popover.isVisible,
+                  popover.occlusionState.contains(.visible) || self.window.occlusionState.contains(.visible) else { return }
+            let clickLocation = NSEvent.mouseLocation
+            if !self.shouldKeepPopoversOpen(for: clickLocation) {
                 self.closePopover()
             }
         }
@@ -375,6 +522,8 @@ class WalkerCharacter {
         sleepReason = nil
         isPendingClearConfirmation = false
         lastAssistantOutput = ""
+        isAttemptingGeminiFallback = false
+        hasAttemptedGeminiFallback = false
         terminalView?.inputField.placeholderString = characterInputPlaceholder
     }
 
@@ -415,6 +564,33 @@ class WalkerCharacter {
         }
     }
 
+    private func shouldKeepPopoversOpen(for location: NSPoint) -> Bool {
+        if window.occlusionState.contains(.visible), window.frame.contains(location) {
+            return true
+        }
+
+        if let popover = popoverWindow,
+           popover.occlusionState.contains(.visible),
+           popover.frame.contains(location) {
+            return true
+        }
+
+        guard let siblings = controller?.characters else { return false }
+        for sibling in siblings {
+            if sibling.window.occlusionState.contains(.visible), sibling.window.frame.contains(location) {
+                return true
+            }
+            if sibling.isIdleForPopover,
+               let siblingPopover = sibling.popoverWindow,
+               siblingPopover.occlusionState.contains(.visible),
+               siblingPopover.frame.contains(location) {
+                return true
+            }
+        }
+
+        return false
+    }
+
     var resolvedTheme: PopoverTheme {
         (themeOverride ?? PopoverTheme.current).withCharacterColor(characterColor).withCustomFont()
     }
@@ -431,6 +607,19 @@ class WalkerCharacter {
 
     func endManualDrag() {
         guard isManualDragging else { return }
+
+        let dropPoint = NSPoint(x: window.frame.midX, y: window.frame.midY)
+        if let controller,
+           let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(dropPoint) }) {
+            if let targetIndex = NSScreen.screens.firstIndex(where: { $0 === targetScreen }) {
+                preferredScreenIndex = targetIndex
+            }
+
+            let geometry = controller.dockGeometry(for: targetScreen)
+            lastKnownDockX = geometry.dockX
+            lastKnownDockTopY = geometry.dockTopY
+            currentTravelDistance = max(geometry.dockWidth - displayWidth, 0)
+        }
 
         let travelDistance = max(currentTravelDistance, 0)
         if travelDistance > 0 {
@@ -569,10 +758,11 @@ class WalkerCharacter {
         session.onTurnComplete = { [weak self] in
             self?.orchestrator?.commitPendingUserMessageIfNeeded()
             self?.orchestrator?.recordTurnComplete()
-            // C1: Flush accumulated streaming text as a single assistant turn
+            // C1: Flush only the current turn's streamed text as a single assistant turn
             if let text = self?.currentStreamingText, !text.isEmpty {
                 self?.orchestrator?.recordAssistantTurn(text)
             }
+            self?.currentStreamingText = ""
             self?.logOrchestrationState(reason: "turn-complete")
             self?.updateModeBadge()
             self?.terminalView?.endStreaming()
@@ -584,8 +774,20 @@ class WalkerCharacter {
             let isLimitSignal = AgentProvider.isLikelyLimitMessage(text)
             self?.orchestrator?.discardPendingUserMessage()
             self?.orchestrator?.recordError(isLimitSignal: isLimitSignal)
+            self?.currentStreamingText = ""
+            self?.lastAssistantOutput = ""
             self?.terminalView?.appendError(text)
+
+            if self?.isAttemptingGeminiFallback == true, AgentProvider.current == .gemini {
+                self?.isAttemptingGeminiFallback = false
+                self?.enterSleepMode(reason: "Gemini fallback unavailable")
+                return
+            }
+
             if isLimitSignal {
+                if self?.attemptGeminiFallbackIfNeeded(limitMessage: text) == true {
+                    return
+                }
                 self?.enterSleepMode(reason: "credit limit reached")
             }
         }
@@ -622,6 +824,10 @@ class WalkerCharacter {
         }
 
         orchestrator?.stageUserMessage(message)
+
+        // Reset per-turn buffers so previous replies do not leak into the next response.
+        currentStreamingText = ""
+        lastAssistantOutput = ""
 
         userTurnCount += 1
         maybeShowProactiveLimitPrompt()
@@ -672,11 +878,11 @@ class WalkerCharacter {
             badge.stringValue = ""
             badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
         case .compressedHistory:
-            badge.stringValue = "● compressed"
-            badge.textColor = NSColor.systemOrange.withAlphaComponent(0.85)
+            badge.stringValue = ""
+            badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
         case .emergency:
-            badge.stringValue = "● emergency"
-            badge.textColor = NSColor.systemRed
+            badge.stringValue = ""
+            badge.textColor = (badge.textColor ?? NSColor.white).withAlphaComponent(0.0)
         }
     }
 
@@ -705,6 +911,75 @@ class WalkerCharacter {
         terminalView?.inputField.placeholderString = characterInputPlaceholder
         terminalView?.showToast("Waking agent...")
         refreshChat()
+    }
+
+    @discardableResult
+    private func attemptGeminiFallbackIfNeeded(limitMessage: String) -> Bool {
+        guard AgentProvider.current == .claude else { return false }
+        guard !isAttemptingGeminiFallback, !hasAttemptedGeminiFallback else { return false }
+
+        isAttemptingGeminiFallback = true
+        hasAttemptedGeminiFallback = true
+
+        let handoff = generateHandoffSummary()
+        let modeContext: String
+        if let mode = activeCommandMode, let prompt = activeCommandPrompt {
+            modeContext = """
+
+            Active response mode to preserve:
+            [\(mode.uppercased())]
+            \(prompt)
+            """
+        } else {
+            modeContext = ""
+        }
+
+        terminalView?.appendToolResult(summary: "Claude limit reached. Switching to Gemini to continue the task.", isError: false)
+        terminalView?.showToast("Claude limit reached — switching to Gemini")
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        ShellEnvironment.findBinary(name: "gemini", fallbackPaths: [
+            "/opt/homebrew/bin/gemini",
+            "/usr/local/bin/gemini",
+            "\(home)/.npm-global/bin/gemini",
+            "\(home)/.local/bin/gemini"
+        ]) { [weak self] path in
+            guard let self = self else { return }
+
+            guard path != nil else {
+                self.isAttemptingGeminiFallback = false
+                self.terminalView?.appendError("Gemini CLI not found.\n\n\(AgentProvider.gemini.installInstructions)")
+                self.enterSleepMode(reason: "Claude limit reached and Gemini is unavailable")
+                return
+            }
+
+            let continuationPrompt = """
+            Claude hit its usage limit in lil agents. Continue helping the user from this handoff summary and finish the task.
+            \(modeContext)
+
+            \(handoff)
+            """
+
+            AgentProvider.current = .gemini
+            self.session?.terminate()
+            self.session = nil
+            self.currentStreamingText = ""
+            self.lastAssistantOutput = ""
+
+            let newSession = AgentProvider.gemini.createSession()
+            newSession.systemPrompt = AgentProvider.gemini.systemPrompt(for: self.characterName)
+            newSession.onSessionReady = { [weak self] in
+                self?.isAttemptingGeminiFallback = false
+                self?.terminalView?.appendToolResult(summary: "Gemini is ready. Continuing from your Claude handoff.", isError: false)
+                self?.session?.send(message: continuationPrompt)
+            }
+            self.session = newSession
+            self.orchestrator = ConversationOrchestrator(provider: .gemini)
+            self.wireSession(newSession, providerName: AgentProvider.gemini.displayName)
+            newSession.start()
+        }
+
+        return true
     }
 
     private func maybeShowProactiveLimitPrompt() {
@@ -1116,7 +1391,7 @@ class WalkerCharacter {
 
     func updatePopoverPosition() {
         guard let popover = popoverWindow, isIdleForPopover else { return }
-        guard let screen = NSScreen.main else { return }
+        guard let screen = window.screen ?? controller?.screen(for: self) ?? NSScreen.main else { return }
 
         let charFrame = window.frame
         let popoverSize = popover.frame.size

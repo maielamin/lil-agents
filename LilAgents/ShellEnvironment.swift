@@ -74,10 +74,18 @@ class ShellEnvironment {
         }
     }
 
-    /// Find a binary by name using the shell PATH + fallback locations.
+    /// Find a binary by name using preferred known install locations first, then shell PATH.
     static func findBinary(name: String, fallbackPaths: [String], completion: @escaping (String?) -> Void) {
         resolve { env in
-            // Check shell PATH first
+            // Prefer explicit known install locations in the order supplied by the caller.
+            for fallback in fallbackPaths {
+                if FileManager.default.isExecutableFile(atPath: fallback) {
+                    completion(fallback)
+                    return
+                }
+            }
+
+            // Fall back to the captured shell PATH for custom installs.
             if let shellPath = env?["PATH"] {
                 for dir in shellPath.components(separatedBy: ":") {
                     let candidate = "\(dir)/\(name)"
@@ -85,14 +93,6 @@ class ShellEnvironment {
                         completion(candidate)
                         return
                     }
-                }
-            }
-
-            // Fallback locations
-            for fallback in fallbackPaths {
-                if FileManager.default.isExecutableFile(atPath: fallback) {
-                    completion(fallback)
-                    return
                 }
             }
 
