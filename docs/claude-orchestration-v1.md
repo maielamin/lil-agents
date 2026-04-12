@@ -168,7 +168,8 @@ Order matters and should remain stable:
 
 3. Prompt assembly can become too verbose
 - Mitigation: enforce maximum assembled char budget with truncation order
-
+export ANTHROPIC_API_KEY=<your_api_key_here>
+claude whoami
 ## Next Build Steps
 1. Implement ConversationOrchestrator.swift skeleton with unit-testable pure functions
 2. Wire WalkerCharacter outbound path to orchestrator

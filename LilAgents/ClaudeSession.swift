@@ -1,5 +1,76 @@
 import Foundation
 
+private let claudeAuthEnvKeys: Set<String> = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
+
+// Simple .env loader for Claude auth env key fallback
+private func loadClaudeAuthKeysFromEnvFile() -> [String: String] {
+    let fm = FileManager.default
+    let envPaths = [
+        fm.currentDirectoryPath + "/.env",
+        fm.homeDirectoryForCurrentUser.path + "/.env"
+    ]
+
+    var values: [String: String] = [:]
+    for path in envPaths {
+        if let contents = try? String(contentsOfFile: path) {
+            for line in contents.components(separatedBy: .newlines) {
+                guard let (key, value) = parseEnvLine(line) else { continue }
+                guard claudeAuthEnvKeys.contains(key), !value.isEmpty else { continue }
+                values[key] = value
+            }
+            if !values.isEmpty {
+                break
+            }
+        }
+    }
+
+    return values
+}
+
+private func parseEnvLine(_ line: String) -> (String, String)? {
+    var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+
+    if trimmed.hasPrefix("export ") {
+        trimmed = String(trimmed.dropFirst("export ".count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    guard let eqIndex = trimmed.firstIndex(of: "=") else { return nil }
+    let key = String(trimmed[..<eqIndex]).trimmingCharacters(in: .whitespaces)
+    guard !key.isEmpty else { return nil }
+
+    var value = String(trimmed[trimmed.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
+    if value.count >= 2 {
+        let startsAndEndsWithDoubleQuote = value.hasPrefix("\"") && value.hasSuffix("\"")
+        let startsAndEndsWithSingleQuote = value.hasPrefix("'") && value.hasSuffix("'")
+        if startsAndEndsWithDoubleQuote || startsAndEndsWithSingleQuote {
+            value = String(value.dropFirst().dropLast())
+        }
+    }
+
+    return (key, value)
+}
+
+private func applyClaudeAuthFallbacks(to env: inout [String: String]) {
+    let hasAnthropicKey = !(env["ANTHROPIC_API_KEY"]?.isEmpty ?? true)
+    let hasClaudeKey = !(env["CLAUDE_API_KEY"]?.isEmpty ?? true)
+
+    if !hasAnthropicKey || !hasClaudeKey {
+        let envFileKeys = loadClaudeAuthKeysFromEnvFile()
+        for (key, value) in envFileKeys where (env[key]?.isEmpty ?? true) {
+            env[key] = value
+        }
+    }
+
+    if (env["ANTHROPIC_API_KEY"]?.isEmpty ?? true), let claudeKey = env["CLAUDE_API_KEY"], !claudeKey.isEmpty {
+        env["ANTHROPIC_API_KEY"] = claudeKey
+    }
+
+    if (env["CLAUDE_API_KEY"]?.isEmpty ?? true), let anthropicKey = env["ANTHROPIC_API_KEY"], !anthropicKey.isEmpty {
+        env["CLAUDE_API_KEY"] = anthropicKey
+    }
+}
+
 class ClaudeSession: AgentSession {
     private var process: Process?
     private var inputPipe: Pipe?
@@ -113,7 +184,11 @@ class ClaudeSession: AgentSession {
         }
         proc.arguments = args
         proc.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        proc.environment = ShellEnvironment.processEnvironment()
+
+        // Inject Claude auth env keys from environment or .env file
+        var env = ShellEnvironment.processEnvironment()
+        applyClaudeAuthFallbacks(to: &env)
+        proc.environment = env
 
         let inPipe = Pipe()
         let outPipe = Pipe()

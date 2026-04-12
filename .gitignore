@@ -25,3 +25,7 @@ xcuserdata/
 *.dmg
 *.zip
 *.xcworkspace/xcshareddata/swiftpm/
+
+# Local secrets
+.env
+.env.*
