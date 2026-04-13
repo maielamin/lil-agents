@@ -5,13 +5,28 @@ private let claudeAuthEnvKeys: Set<String> = ["ANTHROPIC_API_KEY", "CLAUDE_API_K
 // Simple .env loader for Claude auth env key fallback
 private func loadClaudeAuthKeysFromEnvFile() -> [String: String] {
     let fm = FileManager.default
-    let envPaths = [
-        fm.currentDirectoryPath + "/.env",
-        fm.homeDirectoryForCurrentUser.path + "/.env"
-    ]
+    var envPaths: [String] = []
+
+    #if DEBUG
+    let sourceRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .path
+    envPaths.append(sourceRoot + "/.env")
+    #endif
+
+    envPaths.append(fm.currentDirectoryPath + "/.env")
+    envPaths.append(fm.homeDirectoryForCurrentUser.path + "/.env")
+
+    var dedupedPaths: [String] = []
+    var seen: Set<String> = []
+    for path in envPaths where !seen.contains(path) {
+        dedupedPaths.append(path)
+        seen.insert(path)
+    }
 
     var values: [String: String] = [:]
-    for path in envPaths {
+    for path in dedupedPaths {
         if let contents = try? String(contentsOfFile: path) {
             for line in contents.components(separatedBy: .newlines) {
                 guard let (key, value) = parseEnvLine(line) else { continue }
